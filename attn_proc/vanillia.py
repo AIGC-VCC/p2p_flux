@@ -140,7 +140,7 @@ class VanilliaFluxAttnProcessor:
         # =====================================================================
         # 🌟 Store Image-to-Image Attention Maps
         # =====================================================================
-        if block_type == TransType.DOUBLE:
+        if block_type == TransType.SINGLE:
             # Extract L2L part, shape: (batch_size * heads, S_img, S_img)
             l2l_attn = attention_probs[:, self.text_seq_len:, self.text_seq_len:]
 
