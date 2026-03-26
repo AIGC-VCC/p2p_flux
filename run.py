@@ -10,23 +10,24 @@ import torchvision.transforms as T
 image = Image.open("grid.png")
 mask = Image.open("mask.png")
 
-pipe = FluxFillPipeline.from_pretrained("/home/frain/Documents/FLUX.1-Fill", torch_dtype=torch.bfloat16)
+pipe = FluxPipeline.from_pretrained("/home/frain/Documents/FLUX.1-dev", torch_dtype=torch.bfloat16)
 pipe.enable_sequential_cpu_offload()
 
 num_inference_steps = 50
-prompt=["you're given a 2x2 grid, find the difference of up-left to up-right and apply it to down-left to fill down-right"]
+prompt=["A cat holding a sign that says hello world"]
 # controller = p2p_attn.L2LAttentionStore(prompt, pipe, num_inference_steps)
 # controller.register_attention_control(pipe)
-out_width, out_height = 1232, 1632
-attn_processor = VanilliaFluxAttnProcessor(pipe, prompt, 1232, 1632)
+# out_width, out_height = 1232, 1632
+out_width, out_height = 1024, 1024
+attn_processor = VanilliaFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
 image = pipe(
     prompt=prompt,
-    image=image,
-    mask_image=mask,
+    # image=image,
+    # mask_image=mask,
     height=out_height,
     width=out_width,
-    guidance_scale=30,
+    guidance_scale=3.5,
     num_inference_steps=num_inference_steps,
     max_sequence_length=512,
     generator=torch.Generator("cpu").manual_seed(42)
