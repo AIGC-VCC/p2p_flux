@@ -91,13 +91,56 @@ image, mask = prepare_2x2_icl_inputs("a.png", "aa.png", "b.png")
 import torch
 import torchvision.transforms as T
 import numpy as np
-from diffusers import FluxFillPipeline
+from diffusers import FluxFillPipeline, FluxTransformer2DModel
+from transformers import T5EncoderModel
 from diffusers.utils import load_image
 from attn_proc.vanillia import VanilliaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
 
-pipe = FluxFillPipeline.from_pretrained("/home/frain/Documents/FLUX.1-Fill", torch_dtype=torch.bfloat16)
-pipe.enable_sequential_cpu_offload()
+# ==================================================================
+# 1. 显存战略规划 (极其重要)
+# 我们需要为运行时的 Attention Map 和中间激活值留出巨大的空间。
+# ==================================================================
+transformer_max_memory = {
+    0: "6GiB",   # GPU 0 压力最大（还要存 VAE、CLIP、以及你的 Attention Store），只放极少权重
+    1: "10GiB",  # GPU 1 要单独放 9GB 的 T5 Encoder，所以 Transformer 权重也少放点
+    2: "22GiB",  # GPU 2-7 全部空闲，火力全开承担 Transformer 的主体
+    3: "22GiB",
+    4: "22GiB",
+    5: "22GiB",
+    6: "22GiB",
+    7: "22GiB",
+}
+
+print("正在对 FLUX Transformer 进行多卡层级切片加载...")
+# 单独加载 Transformer，这里是支持 "auto" 的，它会把网络层打散到 8 张卡上
+transformer = FluxTransformer2DModel.from_pretrained(
+    "/home/frain/Documents/FLUX.1-Fill-dev/transformer",
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    max_memory=transformer_max_memory
+)
+
+print("正在单独加载 T5 Encoder 到 GPU 1...")
+# T5 不参与切片，直接整个扔到 GPU 1 上
+text_encoder_2 = T5EncoderModel.from_pretrained(
+    "/home/frain/Documents/FLUX.1-Fill-dev/text_encoder_2",
+    torch_dtype=torch.bfloat16,
+    device_map={"":"cuda:0"}  # <--- 关键魔法：把整个 T5 映射到卡 1 并启用钩子
+)
+print("正在组装 Pipeline...")
+# 实例化你的自定义 Pipeline，把切好的 transformer 和 T5 传进去
+# ⚠️ 注意：这里绝对不要再加 device_map 参数了！
+pipe = FluxFillPipeline.from_pretrained(
+    "/home/frain/Documents/FLUX.1-Fill-dev",
+    transformer=transformer,
+    text_encoder_2=text_encoder_2,
+    torch_dtype=torch.bfloat16
+)
+
+# 把剩下的小组件（VAE, CLIP文本编码器）放到 GPU 0
+pipe.vae.to("cuda:0")
+pipe.text_encoder.to("cuda:0")
 
 num_inference_steps = 50
 prompt=[

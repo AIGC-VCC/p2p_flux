@@ -148,6 +148,7 @@ class VanilliaFluxAttnProcessor:
         
         # Average across all heads to reduce memory: (batch_size, S_img, S_img)
         l2l_attn_avg = l2l_attn.mean(dim=1)
+        l2l_attn_avg = l2l_attn_avg.detach().cpu().to(torch.float16)
         
         # Accumulate the attention maps
         if self.attention_store is None:
