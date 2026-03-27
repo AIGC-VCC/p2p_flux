@@ -50,18 +50,25 @@ class FeatureAlignFluxAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
-    def __init__(self, pipe, prompt):
+    def __init__(self, pipe, prompt, out_width, out_height):
         super().__init__()
         self.pipe = pipe
         self.prompt = prompt
         self.block_idx = [0, 0]
         self.step_idx = 0
         self.batch_size = len(prompt)
+        self.out_width = out_width
+        self.out_height = out_height
 
+        print("Injecting [2 batch feature align] Attention Processor into the pipeline...")
         for i, tblock in enumerate(pipe.transformer.transformer_blocks):
             tblock.attn.set_processor(self)
         for i, tblock in enumerate(pipe.transformer.single_transformer_blocks):
             tblock.attn.set_processor(self)
+        self.attention_store = None
+        self.seq_len = None
+        self.text_seq_len = None
+        self.latent_seq_len = None
 
     def __call__(
         self,
@@ -76,6 +83,10 @@ class FeatureAlignFluxAttnProcessor:
             num_blocks = len(self.pipe.transformer.transformer_blocks)
         elif block_type == TransType.SINGLE:
             num_blocks = len(self.pipe.transformer.single_transformer_blocks)
+        if self.text_seq_len is None and block_type == TransType.DOUBLE:
+            self.text_seq_len = encoder_hidden_states.shape[1]
+            self.latent_seq_len = hidden_states.shape[1]
+            self.seq_len = self.text_seq_len + self.latent_seq_len
 
         query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
             attn, hidden_states, encoder_hidden_states
@@ -109,52 +120,60 @@ class FeatureAlignFluxAttnProcessor:
         end_inject = 35    # 后 15 步交还给模型自己画油画质感
         
         if start_inject <= self.step_idx < end_inject:
+            import math
             # 1. 剥离文本 Token，只拿图像 Token
-            num_text = encoder_key.shape[1] if attn.added_kv_proj_dim is not None else 0
-            img_q = query[:, num_text:, :, :].clone()
-            img_k = key[:, num_text:, :, :].clone()
-            img_v = value[:, num_text:, :, :].clone()
+            img_q = query[:, self.text_seq_len:, :, :].clone()
+            img_k = key[:, self.text_seq_len:, :, :].clone()
+            img_v = value[:, self.text_seq_len:, :, :].clone()
 
-            # 序列长度 S (1024x512 打包后通常是 2048)，mid 就是 1024
-            S = img_q.shape[1]
-            mid = S // 2
+            # 因为是两张图水平拼接 [A | A']，所以宽是高的两倍: W_p = 2 * H_p
+            # S_img = H_p * (2 * H_p) = 2 * H_p^2  => H_p = sqrt(S_img / 2)
+            H_p = int(math.sqrt(self.latent_seq_len / 2))
+            W_p = H_p * 2
+            half_w = W_p // 2
 
-            # 2. 提取特征并转换形状为 (heads, sequence, head_dim) 以便计算 bmm
-            # B: 待生成的底图 (油画苹果)
-            q_B = img_q[1, :mid, :, :].permute(2, 0, 1)      # (heads, mid, dim)
-            v_B = img_v[1, :mid, :, :].permute(2, 0, 1)      
-            
-            # A & A': 参考图 (照片苹果 & 照片橘子)
-            k_A = img_k[0, :mid, :, :].permute(2, 0, 1)      
-            v_A = img_v[0, :mid, :, :].permute(2, 0, 1)      
-            v_A_prime = img_v[0, mid:, :, :].permute(2, 0, 1) 
+            # 重塑为 (Batch=2, H_p, W_p, heads, head_dim)
+            # 这就把 1D 的拉链序列，完美还原成了 2D 物理空间图像！
+            q_grid = img_q.view(2, H_p, W_p, attn.heads, attn.head_dim)
+            k_grid = img_k.view(2, H_p, W_p, attn.heads, attn.head_dim)
+            v_grid = img_v.view(2, H_p, W_p, attn.heads, attn.head_dim)
 
-            # 3. 🧠 核心魔法 1：无 RoPE 语义寻路
-            # 让油画苹果(q_B) 去照片苹果(k_A) 里找对应的部位
+            # 3. 在 2D 空间上精准切片 (只切 W 维度)，再变回 BMM 需要的 (heads, seq, dim)
+            # Batch 0: A (左) 和 A' (右)
+            k_A = k_grid[0, :, :half_w, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            v_A = v_grid[0, :, :half_w, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            v_A_prime = v_grid[0, :, half_w:, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+
+            # Batch 1: B (左) 和 B' (右，B'目前还是原声背景，不提取)
+            q_B = q_grid[1, :, :half_w, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            v_B = v_grid[1, :, :half_w, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+
+            # 4. 🧠 无 RoPE 语义寻路 (找对应像素点)
             scale = attn.head_dim ** -0.5
             sim = torch.bmm(q_B, k_A.transpose(1, 2)) * scale
-            attn_weights = torch.softmax(sim, dim=-1)  # 形状: (heads, mid, mid)
+            attn_weights = torch.softmax(sim, dim=-1)
 
-            # 4. 🧠 核心魔法 2：特征重组 (Feature Reshuffling)
-            # 用注意力权重把 A 和 A' "吸"过来，使得它们的像素排列强行扭曲成 B 的形状！
-            aligned_v_A = torch.bmm(attn_weights, v_A)             # 变成 B 形状的照片苹果
-            aligned_v_A_prime = torch.bmm(attn_weights, v_A_prime) # 变成 B 形状的照片橘子
+            # 5. 特征重组与对齐任务代数
+            aligned_v_A = torch.bmm(attn_weights, v_A)            
+            aligned_v_A_prime = torch.bmm(attn_weights, v_A_prime) 
 
-            # 5. 🧠 核心魔法 3：安全的对齐任务代数
-            # 因为现在大家形状完全一致，直接相减不会有任何空间错位污染！
-            lambda_shift = 1.0  # 橘子特征强度
+            lambda_shift = 5.1  
             delta_v_aligned = aligned_v_A_prime - aligned_v_A
             
-            # 施加到油画苹果上，诞生"油画橘子"的特征
+            # 完美贴合油画苹果骨架的油画橘子特征
             v_syn_h = v_B + lambda_shift * delta_v_aligned
             
-            # 6. 覆写到 Value 张量 B' 的位置
-            v_syn = v_syn_h.permute(1, 2, 0) # 还原形状: (mid, heads, dim)
-            value[1, num_text + mid:, :, :] = v_syn
+            # 6. 覆写到 Value 2D 矩阵的 B' (Batch 1 右半边) 位置
+            v_syn_grid = v_syn_h.permute(1, 0, 2).view(H_p, half_w, attn.heads, attn.head_dim)
+            v_grid[1, :, half_w:, :, :] = v_syn_grid
+
+            # 7. 把 2D 网格重新压扁回 1D，拼回原来的大 Tensor 中
+            v_img_new = v_grid.view(2, self.latent_seq_len, attn.heads, attn.head_dim)
+            value = torch.cat([value[:, :self.text_seq_len, :, :], v_img_new], dim=1)
 
             # (可选) 也可以把 K 同步覆写，但通常修改 V 已经足够主导生成内容
             # k_syn_h = k_B + lambda_shift * (torch.bmm(attn_weights, k_A_prime.permute(2,0,1)) - torch.bmm(attn_weights, k_A.permute(2,0,1)))
-            # key[1, num_text + mid:, :, :] = k_syn_h.permute(1, 2, 0)
+            # key[1, self.text_seq_len + mid:, :, :] = k_syn_h.permute(1, 2, 0)
 
         # =====================================================================
         # 恢复代码，继续执行 RoPE 和正常的 Self-Attention
@@ -168,6 +187,7 @@ class FeatureAlignFluxAttnProcessor:
         # q k v shape: (batch_size, seq_len, heads, head_dim) [1, 4608, 24, 128]
         # to use attn.get_attention_scores() we need to reshape to (batch_size * heads, seq_len, head_dim)
         batch_size, seq_len, heads, head_dim = query.shape
+        assert seq_len == self.seq_len
         query = query.permute(0, 2, 1, 3).reshape(-1, query.shape[1], query.shape[3])
         key = key.permute(0, 2, 1, 3).reshape(-1, key.shape[1], key.shape[3])
         value = value.permute(0, 2, 1, 3).reshape(-1, value.shape[1], value.shape[3])
@@ -185,6 +205,25 @@ class FeatureAlignFluxAttnProcessor:
             key,
             attention_mask=attention_mask,
         )
+
+        # =====================================================================
+        # 🌟 Store Image-to-Image Attention Maps
+        # =====================================================================
+        # Extract L2L part, shape: (batch_size * heads, S_img, S_img)
+        l2l_attn = attention_probs[:, self.text_seq_len:, self.text_seq_len:]
+
+        # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
+        l2l_attn = l2l_attn.view(self.batch_size, -1, self.latent_seq_len, self.latent_seq_len)
+        
+        # Average across all heads to reduce memory: (batch_size, S_img, S_img)
+        l2l_attn_avg = l2l_attn.mean(dim=1)
+        
+        # Accumulate the attention maps
+        if self.attention_store is None:
+            self.attention_store = l2l_attn_avg
+        else:
+            self.attention_store += l2l_attn_avg
+        # =====================================================================
 
         hidden_states = torch.bmm(attention_probs, value)
         # hidden_states shape: (batch_size * heads, seq_len, head_dim)
@@ -207,7 +246,6 @@ class FeatureAlignFluxAttnProcessor:
         else:
             ret = hidden_states
 
-        print(f"完成第 {self.step_idx} 步，第 {self.block_idx[block_type]} 个 {block_type.name} 块的注意力计算。")
         self.block_idx[block_type] += 1
         if block_type is TransType.SINGLE and self.block_idx[block_type] >= num_blocks:
             self.block_idx = [0, 0]

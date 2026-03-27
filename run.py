@@ -85,7 +85,7 @@ def prepare_2x2_icl_inputs(a_path, aa_path, b_path, target_size=(512, 512)):
     return image_grid, mask_grid
 
 # 使用示例：
-image, mask = prepare_2x2_icl_inputs("a.png", "aa.png", "b.png")
+image, mask = prepare_batch_icl_inputs("a.png", "aa.png", "b.png")
 # pipeline(prompt="", image=images, mask_image=masks, ...)
 
 import torch
@@ -95,6 +95,7 @@ from diffusers import FluxFillPipeline
 from diffusers.utils import load_image
 from attn_proc.vanillia import VanilliaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
+from attn_proc.two_batch_feature_align import FeatureAlignFluxAttnProcessor
 
 pipe = FluxFillPipeline.from_pretrained("/home/frain/Documents/FLUX.1-Fill", torch_dtype=torch.bfloat16)
 pipe.enable_sequential_cpu_offload()
@@ -102,11 +103,11 @@ pipe.enable_sequential_cpu_offload()
 num_inference_steps = 50
 prompt=[
 "In the masked region on the bottom-right, generate the exact same oil painting scene, but replace the three red apples with three oranges. Strictly preserve the original oil painting style, the lighting, the plate, the blue patterned cloth, and all other background details perfectly."
-]
+]*2
 out_width = 1024
-out_height = 1024
+out_height = 512
 
-attn_processor = VanilliaFluxAttnProcessor(pipe, prompt, out_width, out_height)
+attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
 image = pipe(
     prompt=prompt,
@@ -120,7 +121,8 @@ image = pipe(
     generator=torch.Generator("cpu").manual_seed(0)
 ).images
 
-image[0].save(f"out.png")
+image[0].save(f"out_0.png")
+image[1].save("out_1.png")
 to_tensor = T.ToTensor()
 save_dict = {
     "image": torch.stack([to_tensor(img) for img in image]),
