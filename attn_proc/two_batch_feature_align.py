@@ -116,7 +116,7 @@ class FeatureAlignFluxAttnProcessor:
         # 必须在 apply_rotary_emb 之前执行，利用纯语义特征进行空间对齐！
         # =====================================================================
         
-        start_inject = 0   # 前 5 步让初始噪声稳定
+        start_inject = 15   # 前 5 步让初始噪声稳定
         end_inject = 35    # 后 15 步交还给模型自己画油画质感
         
         if start_inject <= self.step_idx < end_inject:
@@ -157,7 +157,7 @@ class FeatureAlignFluxAttnProcessor:
             aligned_v_A = torch.bmm(attn_weights, v_A)            
             aligned_v_A_prime = torch.bmm(attn_weights, v_A_prime) 
 
-            lambda_shift = 5.1  
+            lambda_shift = 3.1  
             delta_v_aligned = aligned_v_A_prime - aligned_v_A
             
             # 完美贴合油画苹果骨架的油画橘子特征
