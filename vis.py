@@ -1,3 +1,5 @@
+# %%
+%matplotlib widget
 import os
 import torch
 import numpy as np
@@ -137,3 +139,4 @@ if __name__ == "__main__":
         pt_path="controller_attention_store.pt",
         batch_idx=0
     )
+# %%

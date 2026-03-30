@@ -1,0 +1,8 @@
+jupyter
+ipympl
+matplotlib
+
+diffusers
+transformers
+torch
+pillow
