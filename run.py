@@ -98,9 +98,10 @@ from attn_proc.sac import SACFluxAttnProcessor
 from attn_proc.two_batch_feature_align import FeatureAlignFluxAttnProcessor
 
 pipe = FluxFillPipeline.from_pretrained("/home/frain/Documents/FLUX.1-Fill", torch_dtype=torch.bfloat16)
-pipe.enable_sequential_cpu_offload()
+pipe.enable_model_cpu_offload()
 
 num_inference_steps = 50
+max_sequence_length = 256
 prompt=[
 """A 2x2 layout of images. 
 [left-top] A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
@@ -108,8 +109,8 @@ prompt=[
 [left-bottom] An oil painting still life featuring three red apples on a decorative plate. The plate rests on a draped blue and white patterned cloth over a wooden table. A pitcher, glasses, a window, and a handwritten note are visible in the scene. 
 [right-bottom] An oil painting still life of oranges on the same decorative plate. The draped blue and white cloth, wooden table, pitcher, glasses, window, and handwritten note are identical to the bottom-left image."""
 ]
-out_width = 1024
-out_height = 1024
+out_width = 512
+out_height = 512
 
 attn_processor = VanillaFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
@@ -121,18 +122,18 @@ image = pipe(
     height=out_height,
     guidance_scale=30,
     num_inference_steps=num_inference_steps,
-    max_sequence_length=512,
+    max_sequence_length=max_sequence_length,
     generator=torch.Generator("cpu").manual_seed(0)
 ).images
 
 image[0].save(f"out_0.png")
 # image[1].save("out_1.png")
 to_tensor = T.ToTensor()
-# 1. 提取 Prompt 对应的 Token IDs (FLUX 用 tokenizer_2 处理 512 长度)
+# 1. 提取 Prompt 对应的 Token IDs (FLUX 用 tokenizer_2 处理)
 text_inputs = pipe.tokenizer_2(
     prompt, 
     padding="max_length", 
-    max_length=512, 
+    max_length=max_sequence_length, 
     truncation=True, 
     return_tensors="pt"
 )

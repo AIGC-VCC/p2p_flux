@@ -45,7 +45,6 @@ class InteractiveAttentionViewer:
         self.img_array = img_tensor.permute(1, 2, 0).numpy()
 
         print("Data loaded successfully! Initializing UI...")
-        self.plot_top_k_attention_sinks(top_percent=3.5)
         self.setup_ui()
 
     def plot_top_k_attention_sinks(self, top_percent=5):
@@ -149,7 +148,7 @@ class InteractiveAttentionViewer:
 
     def setup_ui(self):
         # 使用 GridSpec 创建 2x2 布局，下面一行合并用来显示柱状图
-        self.fig = plt.figure(figsize=(12, 7))
+        self.fig = plt.figure(figsize=(12, 10))
         self.fig.canvas.manager.set_window_title("FLUX.1 Joint Attention Viewer")
         gs = gridspec.GridSpec(2, 2, height_ratios=[2.5, 1])
 
@@ -183,7 +182,7 @@ class InteractiveAttentionViewer:
         # --- Bottom: Text Tokens Bar Chart ---
         self.ax_bar = self.fig.add_subplot(gs[1, :])
         
-        # 初始化 512 个柱子
+        # 初始化 self.text_seq_len 个柱子
         self.bars = self.ax_bar.bar(range(self.text_seq_len), np.zeros(self.text_seq_len), color='cornflowerblue')
         self.ax_bar.set_xlim(-1, self.text_seq_len)
         self.ax_bar.set_title("Text Token Activation (Click bar to see T2L on image)")
