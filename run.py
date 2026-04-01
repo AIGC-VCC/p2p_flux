@@ -85,7 +85,7 @@ def prepare_2x2_icl_inputs(a_path, aa_path, b_path, target_size=(512, 512)):
     return image_grid, mask_grid
 
 # 使用示例：
-image, mask = prepare_batch_icl_inputs("a.png", "aa.png", "b.png")
+image, mask = prepare_2x2_icl_inputs("a.png", "aa.png", "b.png")
 # pipeline(prompt="", image=images, mask_image=masks, ...)
 
 import torch
@@ -93,7 +93,7 @@ import torchvision.transforms as T
 import numpy as np
 from diffusers import FluxFillPipeline
 from diffusers.utils import load_image
-from attn_proc.vanillia import VanilliaFluxAttnProcessor
+from attn_proc.vanilla import VanillaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
 from attn_proc.two_batch_feature_align import FeatureAlignFluxAttnProcessor
 
@@ -102,12 +102,16 @@ pipe.enable_sequential_cpu_offload()
 
 num_inference_steps = 50
 prompt=[
-"In the masked region on the bottom-right, generate the exact same oil painting scene, but replace the three red apples with three oranges. Strictly preserve the original oil painting style, the lighting, the plate, the blue patterned cloth, and all other background details perfectly."
-]*2
+"""A 2x2 layout of images. 
+[left-top] A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
+[right-top] A photograph of the exact same woven basket on the outdoor table, but filled with oranges, with two oranges resting beside it. 
+[left-bottom] An oil painting still life featuring three red apples on a decorative plate. The plate rests on a draped blue and white patterned cloth over a wooden table. A pitcher, glasses, a window, and a handwritten note are visible in the scene. 
+[right-bottom] An oil painting still life of oranges on the same decorative plate. The draped blue and white cloth, wooden table, pitcher, glasses, window, and handwritten note are identical to the bottom-left image."""
+]
 out_width = 1024
-out_height = 512
+out_height = 1024
 
-attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height)
+attn_processor = VanillaFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
 image = pipe(
     prompt=prompt,
@@ -122,11 +126,26 @@ image = pipe(
 ).images
 
 image[0].save(f"out_0.png")
-image[1].save("out_1.png")
+# image[1].save("out_1.png")
 to_tensor = T.ToTensor()
+# 1. 提取 Prompt 对应的 Token IDs (FLUX 用 tokenizer_2 处理 512 长度)
+text_inputs = pipe.tokenizer_2(
+    prompt, 
+    padding="max_length", 
+    max_length=512, 
+    truncation=True, 
+    return_tensors="pt"
+)
+token_ids = text_inputs.input_ids[0].tolist()
+# 2. 将 IDs 转换回可读的单词/子词
+decoded_tokens = pipe.tokenizer_2.convert_ids_to_tokens(token_ids)
 save_dict = {
     "image": torch.stack([to_tensor(img) for img in image]),
-    "attention_map": attn_processor.attention_store,
+    "attention_map": attn_processor.attention_store.to("cpu"),
+    "tokens": decoded_tokens,  # <--- 把文本 token 列表存进去！
+    "seq_len": attn_processor.seq_len, # 把长度也存下来，方便切片
+    "text_seq_len": attn_processor.text_seq_len,
+    "latent_seq_len": attn_processor.latent_seq_len,
     "out_width": out_width,
     "out_height": out_height,
 }

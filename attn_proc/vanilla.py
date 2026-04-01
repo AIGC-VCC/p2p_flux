@@ -46,7 +46,7 @@ def _get_qkv_projections(attn: "FluxAttention", hidden_states, encoder_hidden_st
     return _get_projections(attn, hidden_states, encoder_hidden_states)
 
 
-class VanilliaFluxAttnProcessor:
+class VanillaFluxAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
@@ -140,20 +140,18 @@ class VanilliaFluxAttnProcessor:
         # =====================================================================
         # 🌟 Store Image-to-Image Attention Maps
         # =====================================================================
-        # Extract L2L part, shape: (batch_size * heads, S_img, S_img)
-        l2l_attn = attention_probs[:, self.text_seq_len:, self.text_seq_len:]
+        if block_type == TransType.DOUBLE or block_type == TransType.SINGLE: # edit as you like
+            # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
+            attn_to_save = attention_probs.view(self.batch_size, -1, self.seq_len, self.seq_len)
 
-        # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
-        l2l_attn = l2l_attn.view(self.batch_size, -1, self.latent_seq_len, self.latent_seq_len)
-        
-        # Average across all heads to reduce memory: (batch_size, S_img, S_img)
-        l2l_attn_avg = l2l_attn.mean(dim=1)
-        
-        # Accumulate the attention maps
-        if self.attention_store is None:
-            self.attention_store = l2l_attn_avg
-        else:
-            self.attention_store += l2l_attn_avg
+            # Average across all heads to reduce memory: (batch_size, S_img, S_img)
+            attn_avg = attn_to_save.mean(dim=1)
+
+            # Accumulate the attention maps
+            if self.attention_store is None:
+                self.attention_store = attn_avg
+            else:
+                self.attention_store += attn_avg
         # =====================================================================
 
         hidden_states = torch.bmm(attention_probs, value)
