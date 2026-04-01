@@ -123,7 +123,7 @@ image = pipe(
     guidance_scale=30,
     num_inference_steps=num_inference_steps,
     max_sequence_length=max_sequence_length,
-    generator=torch.Generator("cpu").manual_seed(0)
+    generator=torch.Generator("cpu").manual_seed(22)
 ).images
 
 image[0].save(f"out_0.png")
