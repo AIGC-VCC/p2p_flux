@@ -103,11 +103,9 @@ pipe.enable_model_cpu_offload()
 num_inference_steps = 50
 max_sequence_length = 256
 prompt=[
-"""A 2x2 layout of images. 
-[left-top] A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
-[right-top] A photograph of the exact same woven basket on the outdoor table, but filled with oranges, with two oranges resting beside it. 
-[left-bottom] An oil painting still life featuring three red apples on a decorative plate. The plate rests on a draped blue and white patterned cloth over a wooden table. A pitcher, glasses, a window, and a handwritten note are visible in the scene. 
-[right-bottom] An oil painting still life of oranges on the same decorative plate. The draped blue and white cloth, wooden table, pitcher, glasses, window, and handwritten note are identical to the bottom-left image."""
+"""
+A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
+"""
 ]
 out_width = 512
 out_height = 512
@@ -123,7 +121,7 @@ image = pipe(
     guidance_scale=30,
     num_inference_steps=num_inference_steps,
     max_sequence_length=max_sequence_length,
-    generator=torch.Generator("cpu").manual_seed(22)
+    generator=torch.Generator("cpu").manual_seed(43)
 ).images
 
 image[0].save(f"out_0.png")
@@ -140,9 +138,11 @@ text_inputs = pipe.tokenizer_2(
 token_ids = text_inputs.input_ids[0].tolist()
 # 2. 将 IDs 转换回可读的单词/子词
 decoded_tokens = pipe.tokenizer_2.convert_ids_to_tokens(token_ids)
+
+print(f"attn map shape: {attn_processor.attention_store.shape}, take up memory: {attn_processor.attention_store.element_size() * attn_processor.attention_store.nelement() / (1024**2):.2f} MB")
 save_dict = {
     "image": torch.stack([to_tensor(img) for img in image]),
-    "attention_map": attn_processor.attention_store.to("cpu"),
+    "attention_map": attn_processor.attention_store.to("cpu") / attn_processor.attn_save_counter,  # 平均注意力图
     "tokens": decoded_tokens,  # <--- 把文本 token 列表存进去！
     "seq_len": attn_processor.seq_len, # 把长度也存下来，方便切片
     "text_seq_len": attn_processor.text_seq_len,

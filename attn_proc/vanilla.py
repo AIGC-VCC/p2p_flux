@@ -70,6 +70,8 @@ class VanillaFluxAttnProcessor:
         self.text_seq_len = None
         self.latent_seq_len = None
 
+        self.attn_save_counter = 0
+
     def __call__(
         self,
         attn: "FluxAttention",
@@ -141,17 +143,25 @@ class VanillaFluxAttnProcessor:
         # 🌟 Store Image-to-Image Attention Maps
         # =====================================================================
         if block_type == TransType.DOUBLE or block_type == TransType.SINGLE: # edit as you like
+            
+            # 【核心修改点】：在这里直接将其转换为 float32
+            attention_probs_fp32 = attention_probs.to(torch.float32)
+            
             # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
-            attn_to_save = attention_probs.view(self.batch_size, -1, self.seq_len, self.seq_len)
+            attn_to_save = attention_probs_fp32.view(self.batch_size, -1, self.seq_len, self.seq_len)
 
             # Average across all heads to reduce memory: (batch_size, S_img, S_img)
             attn_avg = attn_to_save.mean(dim=1)
+            
+            # assert softmax along the last dimension sums to 1
+            assert torch.allclose(attn_to_save.sum(dim=-1), torch.ones_like(attn_to_save.sum(dim=-1)), rtol=0.01)
 
             # Accumulate the attention maps
             if self.attention_store is None:
                 self.attention_store = attn_avg
             else:
                 self.attention_store += attn_avg
+            self.attn_save_counter += 1
         # =====================================================================
 
         hidden_states = torch.bmm(attention_probs, value)
