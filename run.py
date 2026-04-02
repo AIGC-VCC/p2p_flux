@@ -91,24 +91,63 @@ image, mask = prepare_2x2_icl_inputs("a.png", "aa.png", "b.png")
 import torch
 import torchvision.transforms as T
 import numpy as np
-from diffusers import FluxFillPipeline
+from diffusers import FluxFillPipeline, FluxTransformer2DModel, AutoencoderKL
+from transformers import CLIPTextModel, T5EncoderModel
+
 from diffusers.utils import load_image
 from attn_proc.vanilla import VanillaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
 from attn_proc.two_batch_feature_align import FeatureAlignFluxAttnProcessor
 
-pipe = FluxFillPipeline.from_pretrained("/home/frain/Documents/FLUX.1-Fill", torch_dtype=torch.bfloat16)
-pipe.enable_model_cpu_offload()
+model_path = "/home/frain/Documents/FLUX.1-Fill"
+dtype = torch.bfloat16
+custom_device_map = {
+    "pos_embed": 0,
+    "time_text_embed": 0,
+    "context_embedder": 0,
+    "x_embedder": 0,
+    "transformer_blocks": 0,
+    "single_transformer_blocks": 1,
+    "norm_out": 1,
+    "proj_out": 1
+}
+transformer = FluxTransformer2DModel.from_pretrained(
+    model_path,
+    subfolder="transformer",
+    torch_dtype=dtype,
+    device_map=custom_device_map,
+)
+print(transformer.hf_device_map)
+
+target_device = "cuda:2"
+
+text_encoder_2 = T5EncoderModel.from_pretrained(model_path, subfolder="text_encoder_2", torch_dtype=dtype).to(target_device)
+text_encoder = CLIPTextModel.from_pretrained(model_path, subfolder="text_encoder", torch_dtype=dtype).to(target_device)
+vae = AutoencoderKL.from_pretrained(model_path, subfolder="vae", torch_dtype=dtype).to(target_device)
+
+
+pipe = FluxFillPipeline.from_pretrained(
+    model_path,
+    transformer=transformer, # 你原本已有的 transformer
+    text_encoder=text_encoder,
+    text_encoder_2=text_encoder_2,
+    vae=vae,
+    torch_dtype=dtype,
+)
+# pipe.enable_model_cpu_offload()
 
 num_inference_steps = 50
 max_sequence_length = 256
 prompt=[
-"""
-A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
+"""A 2x2 layout of images. 
+[left-top] A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
+[right-top] A photograph of the exact same woven basket on the outdoor table, but filled with oranges, with two oranges resting beside it. 
+[left-bottom] An oil painting still life featuring three red apples on a decorative plate. The plate rests on a draped blue and white patterned cloth over a wooden table. A pitcher, glasses, a window, and a handwritten note are visible in the scene. 
+[right-bottom] An oil painting still life of oranges on the same decorative plate. The draped blue and white cloth, wooden table, pitcher, glasses, window, and handwritten note are identical to the bottom-left image.
 """
 ]
-out_width = 512
-out_height = 512
+out_width = 1024
+out_height = 1024
 
 attn_processor = VanillaFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
@@ -121,7 +160,7 @@ image = pipe(
     guidance_scale=30,
     num_inference_steps=num_inference_steps,
     max_sequence_length=max_sequence_length,
-    generator=torch.Generator("cpu").manual_seed(43)
+    generator=torch.Generator("cpu").manual_seed(42)
 ).images
 
 image[0].save(f"out_0.png")

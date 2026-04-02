@@ -142,7 +142,7 @@ class VanillaFluxAttnProcessor:
         # =====================================================================
         # 🌟 Store Image-to-Image Attention Maps
         # =====================================================================
-        if block_type == TransType.DOUBLE or block_type == TransType.SINGLE: # edit as you like
+        if block_type == TransType.DOUBLE:
             
             # 【核心修改点】：在这里直接将其转换为 float32
             attention_probs_fp32 = attention_probs.to(torch.float32)
