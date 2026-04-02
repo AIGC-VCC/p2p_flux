@@ -97,7 +97,7 @@ from transformers import CLIPTextModel, T5EncoderModel
 from diffusers.utils import load_image
 from attn_proc.vanilla import VanillaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
-from attn_proc.two_batch_feature_align import FeatureAlignFluxAttnProcessor
+from attn_proc.feature_align import FeatureAlignFluxAttnProcessor
 
 model_path = "/home/frain/Documents/FLUX.1-Fill"
 dtype = torch.bfloat16
@@ -149,7 +149,7 @@ prompt=[
 out_width = 1024
 out_height = 1024
 
-attn_processor = VanillaFluxAttnProcessor(pipe, prompt, out_width, out_height)
+attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height)
 
 image = pipe(
     prompt=prompt,
@@ -160,7 +160,7 @@ image = pipe(
     guidance_scale=30,
     num_inference_steps=num_inference_steps,
     max_sequence_length=max_sequence_length,
-    generator=torch.Generator("cpu").manual_seed(42)
+    generator=torch.Generator("cpu").manual_seed(22)
 ).images
 
 image[0].save(f"out_0.png")
