@@ -1,92 +1,10 @@
+import os
+import json
+import random
+import argparse
+from pathlib import Path
+from PIL import Image
 from PIL import Image, ImageDraw
-
-def prepare_batch_icl_inputs(a_path, aa_path, b_path, target_size=(512, 512)):
-    """
-    为 FLUX.1-Fill 准备 Batch=2 的 In-Context Learning 输入。
-    target_size: 单张子图的尺寸 (W, H)。建议 512x512，拼接后为 1024x512。
-    """
-    # 1. 加载并统一尺寸
-    img_A = Image.open(a_path).convert("RGB").resize(target_size)
-    img_A_prime = Image.open(aa_path).convert("RGB").resize(target_size)
-    img_B = Image.open(b_path).convert("RGB").resize(target_size)
-
-    w, h = target_size
-    batch_w, batch_h = w * 2, h
-
-    # ==========================================
-    # 2. 构建 Image Batch (拼图)
-    # ==========================================
-    # Batch 0: [ A | A' ]
-    image_0 = Image.new("RGB", (batch_w, batch_h))
-    image_0.paste(img_A, (0, 0))
-    image_0.paste(img_A_prime, (w, 0))
-
-    # Batch 1: [ B | B ]  <- 右侧放 B 的复制品作为结构先验
-    image_1 = Image.new("RGB", (batch_w, batch_h))
-    image_1.paste(img_B, (0, 0))
-    image_1.paste(img_B, (w, 0))
-
-    # ==========================================
-    # 3. 构建 Mask Batch
-    # ==========================================
-    # Batch 0 Mask: 全黑 (0)，代表完全保留，不重绘
-    mask_0 = Image.new("L", (batch_w, batch_h), 0)
-
-    # Batch 1 Mask: 左黑右白，代表保留左侧，重绘右侧
-    mask_1 = Image.new("L", (batch_w, batch_h), 0)
-    draw = ImageDraw.Draw(mask_1)
-    # 画一个白色的矩形覆盖右半边
-    draw.rectangle([w, 0, batch_w, batch_h], fill=255)
-
-    # ==========================================
-    # 4. 组装为 Pipeline 可接收的格式
-    # ==========================================
-    images = [image_0, image_1]
-    masks = [mask_0, mask_1]
-
-    # 为了方便 Debug，你可以选择把拼接好的图保存下来看一眼
-    image_0.save("batch_0_context.png")
-    image_1.save("batch_1_target.png")
-    mask_1.save("batch_1_mask.png")
-
-    return images, masks
-
-def prepare_2x2_icl_inputs(a_path, aa_path, b_path, target_size=(512, 512)):
-    """
-    为 FLUX.1-Fill 准备 2x2 四方格的 In-Context Learning 输入。
-    """
-    w, h = target_size
-    grid_w, grid_h = w * 2, h * 2
-
-    # 1. 加载图像
-    img_A = Image.open(a_path).convert("RGB").resize(target_size)
-    img_A_prime = Image.open(aa_path).convert("RGB").resize(target_size)
-    img_B = Image.open(b_path).convert("RGB").resize(target_size)
-
-    # 2. 构建 Image Grid
-    # [ A (左上) | A' (右上) ]
-    # [ B (左下) | B' (右下, 用 B 垫底以稳固结构) ]
-    image_grid = Image.new("RGB", (grid_w, grid_h))
-    image_grid.paste(img_A, (0, 0))              
-    image_grid.paste(img_A_prime, (w, 0))        
-    image_grid.paste(img_B, (0, h))              
-    image_grid.paste(img_B, (w, h))              
-
-    # 3. 构建 Mask Grid
-    # 前三个象限全黑 (0)，只有右下角 B' 为纯白 (255)
-    mask_grid = Image.new("L", (grid_w, grid_h), 0)
-    draw = ImageDraw.Draw(mask_grid)
-    draw.rectangle([w, h, grid_w, grid_h], fill=255)
-
-    # 保存预览
-    image_grid.save("grid_image.png")
-    mask_grid.save("grid_mask.png")
-
-    return image_grid, mask_grid
-
-# 使用示例：
-image, mask = prepare_2x2_icl_inputs("a.png", "aa.png", "b.png")
-# pipeline(prompt="", image=images, mask_image=masks, ...)
 
 import torch
 import torchvision.transforms as T
@@ -97,96 +15,204 @@ from transformers import CLIPTextModel, T5EncoderModel
 from diffusers.utils import load_image
 from attn_proc.vanilla import VanillaFluxAttnProcessor
 from attn_proc.sac import SACFluxAttnProcessor
-from attn_proc.feature_align import FeatureAlignFluxAttnProcessor
+from attn_proc.feature_align import FeatureAlignFluxAttnProcessor, FeatureAlignConfig
 
-model_path = "/home/frain/Documents/FLUX.1-Fill"
-dtype = torch.bfloat16
-custom_device_map = {
-    "pos_embed": 0,
-    "time_text_embed": 0,
-    "context_embedder": 0,
-    "x_embedder": 0,
-    "transformer_blocks": 0,
-    "single_transformer_blocks": 1,
-    "norm_out": 1,
-    "proj_out": 1
-}
-transformer = FluxTransformer2DModel.from_pretrained(
-    model_path,
-    subfolder="transformer",
-    torch_dtype=dtype,
-    device_map=custom_device_map,
-)
-print(transformer.hf_device_map)
-
-target_device = "cuda:2"
-
-text_encoder_2 = T5EncoderModel.from_pretrained(model_path, subfolder="text_encoder_2", torch_dtype=dtype).to(target_device)
-text_encoder = CLIPTextModel.from_pretrained(model_path, subfolder="text_encoder", torch_dtype=dtype).to(target_device)
-vae = AutoencoderKL.from_pretrained(model_path, subfolder="vae", torch_dtype=dtype).to(target_device)
-
-
-pipe = FluxFillPipeline.from_pretrained(
-    model_path,
-    transformer=transformer, # 你原本已有的 transformer
-    text_encoder=text_encoder,
-    text_encoder_2=text_encoder_2,
-    vae=vae,
-    torch_dtype=dtype,
-)
-# pipe.enable_model_cpu_offload()
-
-num_inference_steps = 50
-max_sequence_length = 256
-prompt=[
-"""A 2x2 layout of images. 
-[left-top] A photograph of a woven basket filled with red apples on a wooden table outdoors, with two apples resting beside the basket. The background is a blurred green garden. 
-[right-top] A photograph of the exact same woven basket on the outdoor table, but filled with oranges, with two oranges resting beside it. 
-[left-bottom] An oil painting still life featuring three red apples on a decorative plate. The plate rests on a draped blue and white patterned cloth over a wooden table. A pitcher, glasses, a window, and a handwritten note are visible in the scene. 
-[right-bottom] An oil painting still life of oranges on the same decorative plate. The draped blue and white cloth, wooden table, pitcher, glasses, window, and handwritten note are identical to the bottom-left image.
-"""
+task_list = [
+    "9-Disney_Style",
+    "6-Animal_Airforce",
 ]
-out_width = 1024
-out_height = 1024
 
-attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height)
+Relation252K_dataset = "~/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631"
 
-image = pipe(
-    prompt=prompt,
-    image=image,
-    mask_image=mask,
-    width=out_width,
-    height=out_height,
-    guidance_scale=30,
-    num_inference_steps=num_inference_steps,
-    max_sequence_length=max_sequence_length,
-    generator=torch.Generator("cpu").manual_seed(22)
-).images
+def get_sample(dataset_dir, task, idx):
+    final_dir = Path(os.path.expanduser(dataset_dir)) / task / "Group1"
+    labels_path = final_dir / "labels.json"
+    with open(labels_path, 'r', encoding='utf-8') as f:
+        labels_data = json.load(f)
+    if idx <= 0 or idx > len(labels_data):
+        raise IndexError(f"Index {idx} out of range for task {task} with only {len(labels_data)} samples.")
+    label = labels_data[idx-1].copy()
+    img_path = final_dir / label['img_name']
+    label['img_path'] = str(img_path)
+    return label
 
-image[0].save(f"out_0.png")
-# image[1].save("out_1.png")
-to_tensor = T.ToTensor()
-# 1. 提取 Prompt 对应的 Token IDs (FLUX 用 tokenizer_2 处理)
-text_inputs = pipe.tokenizer_2(
-    prompt, 
-    padding="max_length", 
-    max_length=max_sequence_length, 
-    truncation=True, 
-    return_tensors="pt"
-)
-token_ids = text_inputs.input_ids[0].tolist()
-# 2. 将 IDs 转换回可读的单词/子词
-decoded_tokens = pipe.tokenizer_2.convert_ids_to_tokens(token_ids)
 
-print(f"attn map shape: {attn_processor.attention_store.shape}, take up memory: {attn_processor.attention_store.element_size() * attn_processor.attention_store.nelement() / (1024**2):.2f} MB")
-save_dict = {
-    "image": torch.stack([to_tensor(img) for img in image]),
-    "attention_map": attn_processor.attention_store.to("cpu") / attn_processor.attn_save_counter,  # 平均注意力图
-    "tokens": decoded_tokens,  # <--- 把文本 token 列表存进去！
-    "seq_len": attn_processor.seq_len, # 把长度也存下来，方便切片
-    "text_seq_len": attn_processor.text_seq_len,
-    "latent_seq_len": attn_processor.latent_seq_len,
-    "out_width": out_width,
-    "out_height": out_height,
-}
-torch.save(save_dict, "controller_attention_store.pt")
+def get_sample_pair(dataset_dir, task, idx_a, idx_b):
+    sample_a = get_sample(dataset_dir, task, idx_a)
+    sample_b = get_sample(dataset_dir, task, idx_b)
+    combined_sample = {
+        'task': task,
+        'samples': [sample_a, sample_b]
+    }
+    return combined_sample
+
+
+def get_output_dir(base_dir, task, idx_a, idx_b):
+    output_dir = Path(base_dir) / f"{task}" / f"{idx_a}_{idx_b}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def build_2x2_input_and_mask(img_a, img_b, mask_strategy='gray'):
+    b_w, b_h = img_b.size
+    half_b_w = b_w // 2
+
+    img_b_left = img_b.crop((0, 0, half_b_w, b_h))
+    row_b_input = Image.new('RGB', (b_w, b_h))
+    row_b_input.paste(img_b_left, (0, 0))
+
+    if mask_strategy == 'gray':
+        gray_block = Image.new('RGB', (b_w - half_b_w, b_h), (128, 128, 128))
+        row_b_input.paste(gray_block, (half_b_w, 0))
+    elif mask_strategy == 'copy':
+        row_b_input.paste(img_b_left, (half_b_w, 0))
+    else:
+        raise ValueError(f"Unsupported mask_strategy: {mask_strategy}. Use 'gray' or 'copy'.")
+
+    total_width = max(img_a.width, b_w)
+    total_height = img_a.height + b_h
+
+    input_image = Image.new('RGB', (total_width, total_height))
+    input_image.paste(img_a, (0, 0))
+    input_image.paste(row_b_input, (0, img_a.height))
+
+    mask_image = Image.new('L', (total_width, total_height), 0)
+    mask_block = Image.new('L', (b_w - half_b_w, b_h), 255)
+    mask_image.paste(mask_block, (half_b_w, img_a.height))
+
+    gt_image = Image.new('RGB', (total_width, total_height))
+    gt_image.paste(img_a, (0, 0))
+    gt_image.paste(img_b, (0, img_a.height))
+
+    return input_image, mask_image, gt_image
+
+
+def generate_2x2_input_mask_gt(pair, mask_strategy='gray'):
+    sample_a, sample_b = pair['samples']
+
+    img_a = Image.open(sample_a['img_path']).convert('RGB')
+    img_b = Image.open(sample_b['img_path']).convert('RGB')
+
+    input_image, mask_image, gt_image = build_2x2_input_and_mask(img_a, img_b, mask_strategy=mask_strategy)
+
+    return input_image, mask_image, gt_image
+
+
+def generate_2x2_prompt(pair):
+    sample_a, sample_b = pair['samples']
+    return (
+        "A 2x2 layout of images.\n"
+        f"[left-top] {sample_a['left_image_description']}\n"
+        f"[right-top] {sample_a['right_image_description']}\n"
+        f"[left-bottom] {sample_b['left_image_description']}\n"
+        f"[right-bottom] {sample_b['right_image_description']}"
+    )
+
+
+def load_flux_to_2_gpu(model_path, gpu0, gpu1, dtype=torch.bfloat16):
+    custom_device_map = {
+        "pos_embed": gpu0,
+        "time_text_embed": gpu0,
+        "context_embedder": gpu0,
+        "x_embedder": gpu0,
+        "transformer_blocks": gpu0,
+        # "single_transformer_blocks": gpu1,
+        "norm_out": gpu1,
+        "proj_out": gpu1
+    }
+    for i in range(19):
+        custom_device_map[f"single_transformer_blocks.{i}"] = gpu0
+    for i in range(19, 38):
+        custom_device_map[f"single_transformer_blocks.{i}"] = gpu1
+
+    transformer = FluxTransformer2DModel.from_pretrained(
+        model_path,
+        subfolder="transformer",
+        torch_dtype=dtype,
+        device_map=custom_device_map,
+    )
+    text_encoder_2 = T5EncoderModel.from_pretrained(model_path, subfolder="text_encoder_2", torch_dtype=dtype).to(gpu1)
+    text_encoder = CLIPTextModel.from_pretrained(model_path, subfolder="text_encoder", torch_dtype=dtype).to(gpu1)
+    vae = AutoencoderKL.from_pretrained(model_path, subfolder="vae", torch_dtype=dtype).to(gpu1)
+    pipe = FluxFillPipeline.from_pretrained(
+        model_path,
+        transformer=transformer,
+        text_encoder=text_encoder,
+        text_encoder_2=text_encoder_2,
+        vae=vae,
+        torch_dtype=dtype,
+    )
+
+    return pipe
+
+
+def save_attention_map(tokenizer_2, prompt, max_sequence_length, image, attn_processor, out_width, out_height, attention_store_path="controller_attention_store.pt"):
+    to_tensor = T.ToTensor()
+    # 1. 提取 Prompt 对应的 Token IDs (FLUX 用 tokenizer_2 处理)
+    text_inputs = tokenizer_2(
+        prompt, 
+        padding="max_length", 
+        max_length=max_sequence_length, 
+        truncation=True, 
+        return_tensors="pt"
+    )
+    token_ids = text_inputs.input_ids[0].tolist()
+    # 2. 将 IDs 转换回可读的单词/子词
+    decoded_tokens = pipe.tokenizer_2.convert_ids_to_tokens(token_ids)
+
+    print(f"attn map shape: {attn_processor.attention_store.shape}, take up memory: {attn_processor.attention_store.element_size() * attn_processor.attention_store.nelement() / (1024**2):.2f} MB")
+    save_dict = {
+        "image": torch.stack([to_tensor(img) for img in image]),
+        "attention_map": attn_processor.attention_store.to("cpu") / attn_processor.attn_save_counter,  # 平均注意力图
+        "tokens": decoded_tokens,  # <--- 把文本 token 列表存进去！
+        "seq_len": attn_processor.seq_len, # 把长度也存下来，方便切片
+        "text_seq_len": attn_processor.text_seq_len,
+        "latent_seq_len": attn_processor.latent_seq_len,
+        "out_width": out_width,
+        "out_height": out_height,
+    }
+    torch.save(save_dict, attention_store_path)
+
+
+if __name__ == "__main__":
+    task = "9-Disney_Style"
+    idx_a = 1
+    idx_b = 2
+    pair = get_sample_pair(Relation252K_dataset, task, idx_a, idx_b)
+    output_dir = get_output_dir("output", task, idx_a, idx_b)
+
+    input_image, mask_image, gt_image = generate_2x2_input_mask_gt(pair, mask_strategy='gray')
+    prompt = generate_2x2_prompt(pair)
+
+    model_path = "/home/frain/Documents/FLUX.1-Fill"
+    pipe = load_flux_to_2_gpu(model_path, gpu0="cuda:0", gpu1="cuda:1", dtype=torch.bfloat16)
+
+    num_inference_steps = 50
+    max_sequence_length = 256
+    # out_width same as input width, out_height same as input height
+    out_width = input_image.width
+    out_height = input_image.height
+    exp_config = FeatureAlignConfig(
+        start_inject=0,
+        end_inject=5,
+        lambda_shift=2.0,
+        use_soft_mask=False,
+    )
+    attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height, config=exp_config)
+
+    images = pipe(
+        prompt=prompt,
+        image=input_image,
+        mask_image=mask_image,
+        width=out_width,
+        height=out_height,
+        guidance_scale=30,
+        num_inference_steps=num_inference_steps,
+        max_sequence_length=max_sequence_length,
+        generator=torch.Generator("cpu").manual_seed(22)
+    ).images
+
+    # save output image
+    images[0].save(output_dir / "output.png")
+    gt_image.save(output_dir / "gt.png")
+

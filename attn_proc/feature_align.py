@@ -1,4 +1,6 @@
+from dataclasses import asdict, dataclass, field
 import abc
+import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import itertools
@@ -6,6 +8,16 @@ import torch
 from diffusers.models.transformers.transformer_flux import FluxAttention
 from diffusers.models.embeddings import apply_rotary_emb
 from enum import IntEnum
+
+
+@dataclass
+class FeatureAlignConfig:
+    """Config for feature analogical alignment in attention value routing."""
+
+    start_inject: int = 0
+    end_inject: int = 5
+    lambda_shift: float = 2.0
+    use_soft_mask: bool = False
 
 
 class TransType(IntEnum):
@@ -50,7 +62,7 @@ class FeatureAlignFluxAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
-    def __init__(self, pipe, prompt, out_width, out_height):
+    def __init__(self, pipe, prompt, out_width, out_height, config: Optional[FeatureAlignConfig] = None):
         super().__init__()
         self.pipe = pipe
         self.prompt = prompt
@@ -59,8 +71,9 @@ class FeatureAlignFluxAttnProcessor:
         self.batch_size = len(prompt)
         self.out_width = out_width
         self.out_height = out_height
+        self.config = config if config is not None else FeatureAlignConfig()
 
-        print("Injecting [feature align] Attention Processor into the pipeline...")
+        print(f"Injecting [feature align] Attention Processor...")
         for i, tblock in enumerate(pipe.transformer.transformer_blocks):
             tblock.attn.set_processor(self)
         for i, tblock in enumerate(pipe.transformer.single_transformer_blocks):
@@ -71,6 +84,40 @@ class FeatureAlignFluxAttnProcessor:
         self.latent_seq_len = None
 
         self.attn_save_counter = 0
+
+    def _compute_grid_shape(self) -> Tuple[int, int, int, int]:
+        if self.latent_seq_len is None:
+            raise ValueError("latent_seq_len is not initialized yet")
+        if self.out_width <= 0 or self.out_height <= 0:
+            raise ValueError(f"Invalid output size: {self.out_width}x{self.out_height}")
+
+        ratio = self.out_height / self.out_width
+        target_h = math.sqrt(self.latent_seq_len * ratio)
+
+        best = None
+        best_score = float("inf")
+        max_divisor = int(math.sqrt(self.latent_seq_len))
+        for h in range(1, max_divisor + 1):
+            if self.latent_seq_len % h != 0:
+                continue
+            w = self.latent_seq_len // h
+            for cand_h, cand_w in ((h, w), (w, h)):
+                if cand_h % 2 != 0 or cand_w % 2 != 0:
+                    continue
+                ratio_err = abs((cand_h / cand_w) - ratio)
+                target_err = abs(cand_h - target_h) / max(target_h, 1.0)
+                score = ratio_err + 0.1 * target_err
+                if score < best_score:
+                    best_score = score
+                    best = (cand_h, cand_w)
+
+        if best is None:
+            raise ValueError(
+                f"Cannot split latent seq_len={self.latent_seq_len} into even HxW for 2x2 grid"
+            )
+
+        H_p, W_p = best
+        return H_p, W_p, H_p // 2, W_p // 2
 
     def __call__(
         self,
@@ -117,64 +164,63 @@ class FeatureAlignFluxAttnProcessor:
         # 🌟 2x2 Grid 无 RoPE 语义路由与动态对齐代数
         # =====================================================================
         
-        start_inject = 0
-        end_inject = 5
+        start_inject = self.config.start_inject
+        end_inject = self.config.end_inject
+        lambda_shift = self.config.lambda_shift
         
         if block_type == TransType.DOUBLE and start_inject <= self.step_idx < end_inject:
-            import math
-            # 1. 剥离文本 Token，只拿图像 Token
             img_q = query[:, self.text_seq_len:, :, :].clone()
             img_k = key[:, self.text_seq_len:, :, :].clone()
             img_v = value[:, self.text_seq_len:, :, :].clone()
 
-            # 2. 计算 2x2 网格参数
-            # S_img = (2 * h_p) * (2 * h_p) = 4 * h_p^2  =>  h_p = sqrt(S_img / 4)
-            h_p = int(math.sqrt(self.latent_seq_len / 4))
-            H_p = h_p * 2
-            W_p = h_p * 2
+            # 🌟 1. 动态自适应长宽比计算
+            ratio = self.out_height / self.out_width
+            H_p = int(math.sqrt(self.latent_seq_len * ratio))
+            W_p = self.latent_seq_len // H_p
+            
+            # 单张子图的高和宽
+            h_p = H_p // 2
+            w_p = W_p // 2
 
-            # 重塑为 (Batch=1, H_p, W_p, heads, head_dim)
             q_grid = img_q.view(1, H_p, W_p, attn.heads, attn.head_dim)
             k_grid = img_k.view(1, H_p, W_p, attn.heads, attn.head_dim)
             v_grid = img_v.view(1, H_p, W_p, attn.heads, attn.head_dim)
 
-            # 3. 在 2D 空间上精准切片 (切分 2x2 四个象限)
-            # A (左上): h_p x h_p
-            k_A = k_grid[0, :h_p, :h_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
-            v_A = v_grid[0, :h_p, :h_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            # 🌟 2. 使用动态高宽 (h_p, w_p) 进行精准切片
+            # A (左上): h_p x w_p
+            k_A = k_grid[0, :h_p, :w_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            v_A = v_grid[0, :h_p, :w_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
 
-            # A' (右上): h_p x h_p
-            v_A_prime = v_grid[0, :h_p, h_p:, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            # A' (右上): h_p x w_p
+            v_A_prime = v_grid[0, :h_p, w_p:, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
 
-            # B (左下): h_p x h_p
-            q_B = q_grid[0, h_p:, :h_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
-            v_B = v_grid[0, h_p:, :h_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            # B (左下): h_p x w_p
+            q_B = q_grid[0, h_p:, :w_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
+            v_B = v_grid[0, h_p:, :w_p, :, :].reshape(-1, attn.heads, attn.head_dim).permute(1, 0, 2)
 
-            # B' (右下): 是待生成区，这里不需要提取，后续直接覆写
-
-            # 4. 🧠 无 RoPE 语义寻路 (B 的 Query 寻找 A 的 Key)
+            # 🧠 无 RoPE 语义寻路
             scale = attn.head_dim ** -0.5
             sim = torch.bmm(q_B, k_A.transpose(1, 2)) * scale
             attn_weights = torch.softmax(sim, dim=-1)
 
-            # 5. 特征重组与对齐任务代数
             aligned_v_A = torch.bmm(attn_weights, v_A)            
             aligned_v_A_prime = torch.bmm(attn_weights, v_A_prime) 
 
-            lambda_shift = 2.0
             delta_v_aligned = aligned_v_A_prime - aligned_v_A
             
-            # B 结合 A->A' 的特征变化量
+            # (预留：你可以根据 self.config.align.use_soft_mask 决定是否开启软掩膜)
+            
             v_syn_h = v_B + lambda_shift * delta_v_aligned
             
-            # 6. 覆写到 Value 2D 矩阵的 B' (右下角 [h_p:, h_p:]) 位置
-            # 注意: v_syn_h shape是 (heads, h_p*h_p, head_dim), 需要变回 (h_p, h_p, heads, head_dim)
-            v_syn_grid = v_syn_h.permute(1, 0, 2).view(h_p, h_p, attn.heads, attn.head_dim)
-            v_grid[0, h_p:, h_p:, :, :] = v_syn_grid
-            # 暴力解法：把左下 B 和右下 B' 都改成橘子特征
-            v_grid[0, h_p:, :h_p, :, :] = v_syn_grid # 注意这里的切片，冒号全选了 W 维度
+            # 🌟 3. 覆写位置适配 (h_p, w_p)
+            v_syn_grid = v_syn_h.permute(1, 0, 2).view(h_p, w_p, attn.heads, attn.head_dim)
+            
+            # 右下 B'
+            v_grid[0, h_p:, w_p:, :, :] = v_syn_grid
+            
+            # 左下 B (根据你之前的实验，如果要覆写)
+            v_grid[0, h_p:, :w_p, :, :] = v_syn_grid
 
-            # 7. 把 2D 网格重新压扁回 1D，拼回原来的大 Tensor 中
             v_img_new = v_grid.view(1, self.latent_seq_len, attn.heads, attn.head_dim)
             value = torch.cat([value[:, :self.text_seq_len, :, :], v_img_new], dim=1)
         # =====================================================================
@@ -217,7 +263,7 @@ class FeatureAlignFluxAttnProcessor:
             attention_probs_fp32 = attention_probs.to(torch.float32)
             
             # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
-            attn_to_save = attention_probs_fp32.view(self.batch_size, -1, self.seq_len, self.seq_len)
+            attn_to_save = attention_probs_fp32.view(batch_size, -1, self.seq_len, self.seq_len)
 
             # Average across all heads to reduce memory: (batch_size, S_img, S_img)
             attn_avg = attn_to_save.mean(dim=1)
