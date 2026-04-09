@@ -50,18 +50,24 @@ class TwoBatchFluxAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
-    def __init__(self, pipe, prompt):
+    def __init__(self, pipe, prompt, out_width, out_height):
         super().__init__()
         self.pipe = pipe
         self.prompt = prompt
         self.block_idx = [0, 0]
         self.step_idx = 0
         self.batch_size = len(prompt)
+        self.out_width = out_width
+        self.out_height = out_height
 
+        print("Injecting [2 Batch kv concat] Attention Processor into the pipeline...")
         for i, tblock in enumerate(pipe.transformer.transformer_blocks):
             tblock.attn.set_processor(self)
         for i, tblock in enumerate(pipe.transformer.single_transformer_blocks):
             tblock.attn.set_processor(self)
+        self.seq_len = None
+        self.text_seq_len = None
+        self.latent_seq_len = None
 
     def __call__(
         self,
@@ -76,6 +82,10 @@ class TwoBatchFluxAttnProcessor:
             num_blocks = len(self.pipe.transformer.transformer_blocks)
         elif block_type == TransType.SINGLE:
             num_blocks = len(self.pipe.transformer.single_transformer_blocks)
+        if self.text_seq_len is None and block_type == TransType.DOUBLE:
+            self.text_seq_len = encoder_hidden_states.shape[1]
+            self.latent_seq_len = hidden_states.shape[1]
+            self.seq_len = self.text_seq_len + self.latent_seq_len
 
         query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
             attn, hidden_states, encoder_hidden_states
@@ -143,8 +153,8 @@ class TwoBatchFluxAttnProcessor:
         k_1_ext = k_1_ext.permute(0, 2, 1, 3).reshape(-1, k_1_ext.shape[1], k_1_ext.shape[3])
         v_1_ext = v_1_ext.permute(0, 2, 1, 3).reshape(-1, v_1_ext.shape[1], v_1_ext.shape[3])
 
-        attn.upcast_attention = True
-        attn.upcast_softmax = True
+        attn.upcast_attention = False
+        attn.upcast_softmax = False
         attn.scale = attn.head_dim**-0.5
 
         # =====================================================================
@@ -188,7 +198,6 @@ class TwoBatchFluxAttnProcessor:
         else:
             ret = hidden_states
 
-        print(f"完成第 {self.step_idx} 步，第 {self.block_idx[block_type]} 个 {block_type.name} 块的注意力计算。")
         self.block_idx[block_type] += 1
         if block_type is TransType.SINGLE and self.block_idx[block_type] >= num_blocks:
             self.block_idx = [0, 0]
