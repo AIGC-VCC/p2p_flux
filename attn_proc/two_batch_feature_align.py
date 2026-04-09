@@ -56,7 +56,7 @@ class FeatureAlignFluxAttnProcessor:
         self.prompt = prompt
         self.block_idx = [0, 0]
         self.step_idx = 0
-        self.batch_size = len(prompt)
+        self.batch_size = len(prompt) if isinstance(prompt, list) else 1
         self.out_width = out_width
         self.out_height = out_height
 

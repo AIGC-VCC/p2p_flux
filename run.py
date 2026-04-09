@@ -12,7 +12,7 @@ import numpy as np
 from diffusers import FluxFillPipeline, FluxTransformer2DModel, AutoencoderKL
 from transformers import CLIPTextModel, T5EncoderModel
 
-from attn_proc.feature_align import FeatureAlignFluxAttnProcessor, FeatureAlignConfig
+from attn_proc.sac import SACFluxAttnProcessor
 
 task_list = [
     "9-Disney_Style",
@@ -22,7 +22,8 @@ task_list = [
 Relation252K_dataset = "~/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631"
 
 def get_sample(dataset_dir, task, idx):
-    final_dir = Path(os.path.expanduser(dataset_dir)) / task / "Group1"
+    task_dir = Path(os.path.expanduser(dataset_dir)) / task
+    final_dir = sorted(d for d in task_dir.iterdir() if d.is_dir())[0]
     labels_path = final_dir / "labels.json"
     with open(labels_path, 'r', encoding='utf-8') as f:
         labels_data = json.load(f)
@@ -89,6 +90,8 @@ def generate_2x2_input_mask_gt(pair, mask_strategy='gray'):
 
     img_a = Image.open(sample_a['img_path']).convert('RGB')
     img_b = Image.open(sample_b['img_path']).convert('RGB')
+
+    assert img_a.size == img_b.size, f"Expected img a and b to have the same size, but got {img_a.size} and {img_b.size}"
 
     input_image, mask_image, gt_image = build_2x2_input_and_mask(img_a, img_b, mask_strategy=mask_strategy)
 
@@ -215,7 +218,7 @@ def save_attention_map(tokenizer_2, prompt, max_sequence_length, image, attn_pro
     )
     token_ids = text_inputs.input_ids[0].tolist()
     # 2. 将 IDs 转换回可读的单词/子词
-    decoded_tokens = pipe.tokenizer_2.convert_ids_to_tokens(token_ids)
+    decoded_tokens = tokenizer_2.convert_ids_to_tokens(token_ids)
 
     print(f"attn map shape: {attn_processor.attention_store.shape}, take up memory: {attn_processor.attention_store.element_size() * attn_processor.attention_store.nelement() / (1024**2):.2f} MB")
     save_dict = {
@@ -230,16 +233,18 @@ def save_attention_map(tokenizer_2, prompt, max_sequence_length, image, attn_pro
     }
     torch.save(save_dict, attention_store_path)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--end_inject", type=int, default=15)
-    parser.add_argument("--lambda_shift", type=float, default=2.0)
+    parser.add_argument("--end_step", type=int, default=5, help="End step for SAC injection")
+    parser.add_argument("--tau_a", type=float, default=1.6, help="Logit alignment tau for A' attending to A")
+    parser.add_argument("--tau_b", type=float, default=1.0, help="Logit alignment tau for B' attending to B")
     parser.add_argument("--gpu0", type=str, default="cuda:0")
     parser.add_argument("--gpu1", type=str, default="cuda:1")
     parser.add_argument("--task", type=str, default="9-Disney_Style")
     args = parser.parse_args()
 
-    idx_a, idx_b = 5, 6
+    idx_a, idx_b = 6, 5
     pair = get_sample_pair(Relation252K_dataset, args.task, idx_a, idx_b)
     output_dir = get_output_dir("output", args.task, idx_a, idx_b)
 
@@ -255,14 +260,15 @@ if __name__ == "__main__":
     num_inference_steps = 50
     max_sequence_length = 256
     
-    # 动态构建配置
-    exp_config = FeatureAlignConfig(
-        start_inject=0,
-        end_inject=args.end_inject,
-        lambda_shift=args.lambda_shift,
-        use_soft_mask=False,
+    attn_processor = SACFluxAttnProcessor(
+        pipe=pipe, 
+        prompt=prompt, 
+        out_width=out_width, 
+        out_height=out_height, 
+        end_step=args.end_step,
+        b_a_copyto_bp_ap_tau=args.tau_a,
+        b_b_copyto_bp_b_tau=args.tau_b
     )
-    attn_processor = FeatureAlignFluxAttnProcessor(pipe, prompt, out_width, out_height, config=exp_config)
 
     images = pipe(
         prompt=prompt,
@@ -276,14 +282,15 @@ if __name__ == "__main__":
         generator=torch.Generator("cpu").manual_seed(22)
     ).images
 
-    # 1. 注入 PNG Metadata
+    # 4. 注入 PNG Metadata
     metadata = PngInfo()
-    metadata.add_text("end_inject", str(args.end_inject))
-    metadata.add_text("lambda_shift", str(args.lambda_shift))
+    metadata.add_text("end_step", str(args.end_step))
+    metadata.add_text("tau_a", str(args.tau_a))
+    metadata.add_text("tau_b", str(args.tau_b))
     metadata.add_text("prompt", prompt)
     
     # 2. 生成带有参数的文件名
-    file_name = f"output_ei{args.end_inject}_ls{args.lambda_shift}.png"
+    file_name = f"output_ei{args.tau_a}_ls{args.tau_b}.png"
     out_path = output_dir / file_name
     
     # 保存图片时传入 metadata
@@ -294,14 +301,15 @@ if __name__ == "__main__":
     if not gt_path.exists():
         gt_image.save(gt_path)
 
-    # 3. 记录到全局 JSONL 文件中
+    # 记录到全局 JSONL 文件中
     log_file = Path("output") / "experiments.jsonl"
     log_data = {
         "task": args.task,
         "idx_a": idx_a,
         "idx_b": idx_b,
-        "end_inject": args.end_inject,
-        "lambda_shift": args.lambda_shift,
+        "end_step": args.end_step,
+        "tau_a": args.tau_a,
+        "tau_b": args.tau_b,
         "output_path": str(out_path)
     }
     with open(log_file, "a", encoding="utf-8") as f:

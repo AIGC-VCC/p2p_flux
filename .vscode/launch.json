@@ -9,6 +9,14 @@
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Python Debugger: run.py",
+            "type": "debugpy",
+            "request": "launch",
             "program": "run.py",
             "console": "integratedTerminal",
             "justMyCode": false

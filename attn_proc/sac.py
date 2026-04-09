@@ -1,5 +1,6 @@
 import abc
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+import math
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union
 import numpy as np
 import itertools
 import torch
@@ -50,15 +51,19 @@ class SACFluxAttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
-    def __init__(self, pipe, prompt, out_width, out_height):
+    def __init__(self, pipe, prompt, out_width, out_height, end_step=30, b_a_copyto_bp_ap_tau: float = 1.6, b_b_copyto_bp_b_tau: float = 1.0):
         super().__init__()
         self.pipe = pipe
         self.prompt = prompt
         self.block_idx = [0, 0]
         self.step_idx = 0
-        self.batch_size = len(prompt)
+        self.batch_size = len(prompt) if isinstance(prompt, list) else 1
         self.out_width = out_width
         self.out_height = out_height
+
+        self.end_step = end_step
+        self.b_a_copyto_bp_ap_tau = b_a_copyto_bp_ap_tau
+        self.b_b_copyto_bp_b_tau = b_b_copyto_bp_b_tau
 
         print("Injecting [SAC] Attention Processor into the pipeline...")
         for i, tblock in enumerate(pipe.transformer.transformer_blocks):
@@ -69,6 +74,8 @@ class SACFluxAttnProcessor:
         self.seq_len = None
         self.text_seq_len = None
         self.latent_seq_len = None
+
+        self.attn_save_counter = 0
 
     def __call__(
         self,
@@ -131,52 +138,58 @@ class SACFluxAttnProcessor:
         # =====================================================================
         # 🌟 核心魔改区：Self-Attention Cloning (SAC) 矩阵手术
         # =====================================================================
-        inject_threshold = 30  # 注入步数
-        
+        inject_threshold = self.end_step  # 注入步数
+
         if self.step_idx < inject_threshold:
             import math
 
             latent_seq_len = self.latent_seq_len
 
-            # 将图像部分的注意力矩阵重塑为 5D: (batch*heads, Q_y, Q_x, K_y, K_x)
-            grid_size = int(math.sqrt(latent_seq_len)) # 这里会完美得到 64
-            mid = grid_size // 2              # 32
+            # 🌟 1. 动态自适应长宽比计算
+            ratio = self.out_height / self.out_width
+            H_p = int(math.sqrt(self.latent_seq_len * ratio))
+            W_p = self.latent_seq_len // H_p
+            assert abs(ratio - H_p / W_p) < 0.01, "Calculated grid size does not match the specified aspect ratio"
+            assert H_p * W_p == latent_seq_len, "Calculated grid size does not match latent sequence length"
 
-            # 只截取图像与图像算注意力的部分 (右下角的 4096 x 4096)
-            img_sim = sim[:, self.text_seq_len:, self.text_seq_len:].view(-1, grid_size, grid_size, grid_size, grid_size)
+            # 单张子图的高和宽
+            h_p = H_p // 2
+            w_p = W_p // 2
+
+            # 将图像部分的注意力矩阵重塑为 5D: (batch*heads, Q_y, Q_x, K_y, K_x)
+            # 只截取图像与图像算注意力的部分
+            img_sim = sim[:, self.text_seq_len:, self.text_seq_len:].view(-1, H_p, W_p, H_p, W_p)
 
             # --- 矩阵克隆开始 ---
-            # 目标: B' (右下, y:mid~end, x:mid~end)
+            # 目标: B' (右下, y:h_p~end, x:w_p~end)
 
             # 动作 1: 语义与结构克隆 (SAC 真正的灵魂)
             # 将 B' -> A' 的注意力分数直接改成与 B -> A 相同
             # 这样 B' 在尝试画橘子时，会完美套用原版苹果的结构骨架！
-            clone_b_to_a = img_sim[:, mid:, :mid, :mid, :mid].clone()
-            native_b_prime_to_a_prime = img_sim[:, mid:, mid:, :mid, mid:].clone()
+            clone_b_to_a = img_sim[:, h_p:, :w_p, :h_p, :w_p].clone()
+            native_b_prime_to_a_prime = img_sim[:, h_p:, w_p:, :h_p, w_p:].clone()
             max_native_b_prime_to_a_prime = native_b_prime_to_a_prime.amax(dim=-1, keepdim=True)
             max_b_to_a = clone_b_to_a.amax(dim=-1, keepdim=True)
             # 🌟 动态对齐 (Logit Alignment)
-            tau = 1.6
-            aligned_b_prime_to_a_prime = clone_b_to_a - max_b_to_a + max_native_b_prime_to_a_prime + tau
-            img_sim[:, mid:, mid:, :mid, mid:] = aligned_b_prime_to_a_prime
+            aligned_b_prime_to_a_prime = clone_b_to_a - max_b_to_a + max_native_b_prime_to_a_prime + self.b_a_copyto_bp_ap_tau
+            img_sim[:, h_p:, w_p:, :h_p, w_p:] = aligned_b_prime_to_a_prime
 
             # 动作 2: 阻断旧语义源 (防止画出红苹果)
             # 严禁 B' 看 A (左上的原苹果)，逼迫它只能顺着动作1去 A' 吸取橘子特征
-            # img_sim[:, mid:, mid:, :mid, :mid] = -10000.0
+            # img_sim[:, h_p:, w_p:, :h_p, :w_p] = -10000.0
 
             # 动作 3: B'结构需要和B一致
             # 直接把 B -> B 的分数克隆到 B' -> B 上，确保它们的结构感完全一致！
             # 但是 RoPE 导致的空间错位让它们的注意力分数大小不在同一水平，必须动态对齐一下才能安全克隆！
-            # clone_b_to_b = img_sim[:, mid:, :mid, mid:, :mid].clone()
-            # native_b_prime_to_b = img_sim[:, mid:, mid:, mid:, :mid].clone()
-            # max_native_b_prime_to_b = native_b_prime_to_b.amax(dim=-1, keepdim=True)
-            # max_b_to_b = clone_b_to_b.amax(dim=-1, keepdim=True)
-            # # 🌟 动态对齐 (Logit Alignment)
-            # # 将干净分数的峰值，强行平移到原生噪声分数的峰值水平
-            # # tau = 0.0 表示 1:1 绝对公平竞争；tau = 1.0 表示让克隆特征有 e^1 倍的优势
-            # tau = 1.0
-            # aligned_b_to_b = clone_b_to_b - max_b_to_b + max_native_b_prime_to_b + tau
-            # img_sim[:, mid:, mid:, mid:, :mid] = aligned_b_to_b
+            clone_b_to_b = img_sim[:, h_p:, :w_p, h_p:, :w_p].clone()
+            native_b_prime_to_b = img_sim[:, h_p:, w_p:, h_p:, :w_p].clone()
+            max_native_b_prime_to_b = native_b_prime_to_b.amax(dim=-1, keepdim=True)
+            max_b_to_b = clone_b_to_b.amax(dim=-1, keepdim=True)
+            # 🌟 动态对齐 (Logit Alignment)
+            # 将干净分数的峰值，强行平移到原生噪声分数的峰值水平
+            # tau = 0.0 表示 1:1 绝对公平竞争；tau = 1.0 表示让克隆特征有 e^1 倍的优势
+            aligned_b_to_b = clone_b_to_b - max_b_to_b + max_native_b_prime_to_b + self.b_b_copyto_bp_b_tau
+            img_sim[:, h_p:, w_p:, h_p:, :w_p] = aligned_b_to_b
 
             # ⚠️ 极其关键的修复：什么都不做！
             # 绝对不要动 B' -> B'：让它自己平滑噪声，生成完美的油画笔触！
@@ -198,20 +211,26 @@ class SACFluxAttnProcessor:
         # =====================================================================
         # 🌟 Store Image-to-Image Attention Maps
         # =====================================================================
-        # Extract L2L part, shape: (batch_size * heads, S_img, S_img)
-        l2l_attn = attention_probs[:, self.text_seq_len:, self.text_seq_len:]
+        if block_type == TransType.DOUBLE:
+            
+            # 【核心修改点】：在这里直接将其转换为 float32
+            attention_probs_fp32 = attention_probs.to(torch.float32)
+            
+            # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
+            attn_to_save = attention_probs_fp32.view(self.batch_size, -1, self.seq_len, self.seq_len)
 
-        # Reshape to separate batch and heads: (batch_size, heads, S_img, S_img)
-        l2l_attn = l2l_attn.view(self.batch_size, -1, self.latent_seq_len, self.latent_seq_len)
-        
-        # Average across all heads to reduce memory: (batch_size, S_img, S_img)
-        l2l_attn_avg = l2l_attn.mean(dim=1)
-        
-        # Accumulate the attention maps
-        if self.attention_store is None:
-            self.attention_store = l2l_attn_avg
-        else:
-            self.attention_store += l2l_attn_avg
+            # Average across all heads to reduce memory: (batch_size, S_img, S_img)
+            attn_avg = attn_to_save.mean(dim=1)
+            
+            # assert softmax along the last dimension sums to 1
+            assert torch.allclose(attn_to_save.sum(dim=-1), torch.ones_like(attn_to_save.sum(dim=-1)), rtol=0.01)
+
+            # Accumulate the attention maps
+            if self.attention_store is None:
+                self.attention_store = attn_avg
+            else:
+                self.attention_store += attn_avg
+            self.attn_save_counter += 1
         # =====================================================================
 
         hidden_states = torch.bmm(attention_probs, value)

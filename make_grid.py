@@ -6,7 +6,7 @@ import collections
 
 # --- 配置部分 ---
 # 指向你要整理的实验结果目录
-RESULT_DIR = Path("output/9-Disney_Style/5_6") 
+RESULT_DIR = Path("output/9-Disney_Style/6_5") 
 # 最终拼接图片的保存路径
 OUTPUT_GRID_PATH = RESULT_DIR / "hyperparam_grid.png"
 
@@ -44,10 +44,10 @@ def parse_params_from_filename(filename):
     例如: output_ei15_ls2.0.png -> (15, 2.0)
     """
     # 使用正则表达式匹配 ei 和 ls 的数值
-    pattern = r"output_ei(\d+)_ls([\d.]+)\.png"
+    pattern = r"output_ei([\d.-]+)_ls([\d.-]+)\.png"
     match = re.search(pattern, filename)
     if match:
-        ei = int(match.group(1))
+        ei = float(match.group(1))
         ls = float(match.group(2))
         return ei, ls
     return None

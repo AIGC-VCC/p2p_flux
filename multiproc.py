@@ -11,8 +11,8 @@ for pair in gpu_pairs:
     gpu_queue.put(pair)
 
 # 定义参数空间
-end_inject_list = [5, 10, 15, 20, 25]
-lambda_shift_list = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+end_inject_list = [-1.0, -0.5, 0, 0.5, 1.0]
+lambda_shift_list = [-1.0, -0.5, 0, 0.5, 2.0]
 
 # 生成所有组合
 tasks = list(itertools.product(end_inject_list, lambda_shift_list))
@@ -27,8 +27,8 @@ def run_experiment(task):
     # 构建执行命令
     cmd = [
         "python", "run.py",
-        "--end_inject", str(ei),
-        "--lambda_shift", str(ls),
+        "--tau_a", str(ei),
+        "--tau_b", str(ls),
         "--gpu0", f"cuda:0",
         "--gpu1", f"cuda:1"
     ]
