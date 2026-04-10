@@ -118,34 +118,39 @@ class SACFluxAttnProcessor:
             key = torch.cat([encoder_key, key], dim=1)
             value = torch.cat([encoder_value, value], dim=1)
 
-        # 1. 正常应用 RoPE (因为 SAC 利用的就是同构的相对坐标，所以必须先加 RoPE)
+        # =====================================================================
+        # 拦截区：在正常 RoPE 之前，保存未加位置编码的 Query (用于你的伪造方案)
+        # 注意此时 query_unrope 是 4D: (batch_size, seq_len, heads, head_dim)
+        # =====================================================================
+        query_unrope = query.clone()
+
+        # 1. 正常应用 RoPE (给主体生成用)
         if image_rotary_emb is not None:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
-        # q k v shape: (batch_size, seq_len, heads, head_dim) [1, 4608, 24, 128]
-        # to use attn.get_attention_scores() we need to reshape to (batch_size * heads, seq_len, head_dim)
+        # q k v shape: (batch_size, seq_len, heads, head_dim)
         batch_size, seq_len, heads, head_dim = query.shape
         assert seq_len == self.seq_len
+        
+        # 将 q k v 拍平为 3D: (batch_size * heads, seq_len, head_dim) 以计算注意力
         query = query.permute(0, 2, 1, 3).reshape(-1, query.shape[1], query.shape[3])
         key = key.permute(0, 2, 1, 3).reshape(-1, key.shape[1], key.shape[3])
         value = value.permute(0, 2, 1, 3).reshape(-1, value.shape[1], value.shape[3])
 
-        # 2. 计算原生的 pre-softmax 注意力分数 (Similarity Matrix)
+        # 2. 计算原生的 pre-softmax 注意力分数
         scale = attn.head_dim**-0.5
         sim = torch.bmm(query, key.transpose(-1, -2)) * scale
 
         # =====================================================================
         # 🌟 核心魔改区：Self-Attention Cloning (SAC) 矩阵手术
         # =====================================================================
-        inject_threshold = self.end_step  # 注入步数
+        inject_threshold = self.end_step  
 
         if self.step_idx < inject_threshold:
             import math
-
             latent_seq_len = self.latent_seq_len
 
-            # 🌟 1. 动态自适应长宽比计算
             ratio = self.out_height / self.out_width
             H_p = int(math.sqrt(self.latent_seq_len * ratio))
             W_p = self.latent_seq_len // H_p
@@ -157,8 +162,59 @@ class SACFluxAttnProcessor:
             w_p = W_p // 2
 
             # 将图像部分的注意力矩阵重塑为 5D: (batch*heads, Q_y, Q_x, K_y, K_x)
-            # 只截取图像与图像算注意力的部分
             img_sim = sim[:, self.text_seq_len:, self.text_seq_len:].view(-1, H_p, W_p, H_p, W_p)
+
+            # --- 按照你的思路：构造带有 B' 位置的 Q_B ---
+
+            # 【A. 获取 B' 的 RoPE】(兼容处理)
+            if isinstance(image_rotary_emb, tuple):
+                cos_emb, sin_emb = image_rotary_emb
+                if cos_emb.dim() == 2:
+                    img_rope_cos = cos_emb[self.text_seq_len:, :].view(H_p, W_p, cos_emb.shape[-1])
+                    img_rope_sin = sin_emb[self.text_seq_len:, :].view(H_p, W_p, sin_emb.shape[-1])
+                    rope_b_prime_cos = img_rope_cos[h_p:, w_p:, :].reshape(h_p * w_p, cos_emb.shape[-1])
+                    rope_b_prime_sin = img_rope_sin[h_p:, w_p:, :].reshape(h_p * w_p, sin_emb.shape[-1])
+                else:
+                    img_rope_cos = cos_emb[:, self.text_seq_len:, :].view(-1, H_p, W_p, cos_emb.shape[-1])
+                    img_rope_sin = sin_emb[:, self.text_seq_len:, :].view(-1, H_p, W_p, sin_emb.shape[-1])
+                    rope_b_prime_cos = img_rope_cos[:, h_p:, w_p:, :].reshape(-1, h_p * w_p, cos_emb.shape[-1])
+                    rope_b_prime_sin = img_rope_sin[:, h_p:, w_p:, :].reshape(-1, h_p * w_p, sin_emb.shape[-1])
+                rope_b_prime = (rope_b_prime_cos, rope_b_prime_sin)
+            else:
+                if image_rotary_emb.dim() == 2:
+                    img_rope = image_rotary_emb[self.text_seq_len:, :].view(H_p, W_p, image_rotary_emb.shape[-1])
+                    rope_b_prime = img_rope[h_p:, w_p:, :].reshape(h_p * w_p, image_rotary_emb.shape[-1])
+                else:
+                    img_rope = image_rotary_emb[:, self.text_seq_len:, :].view(-1, H_p, W_p, image_rotary_emb.shape[-1])
+                    rope_b_prime = img_rope[:, h_p:, w_p:, :].reshape(-1, h_p * w_p, image_rotary_emb.shape[-1])
+
+            # 【B. 提取未加 RoPE 的 B 区域 Query (Q_B)】
+            # query_unrope 是 4D 的: (batch, seq_len, heads, head_dim)
+            img_q_unrope = query_unrope[:, self.text_seq_len:, :, :].view(-1, H_p, W_p, heads, head_dim)
+            q_unrope_b = img_q_unrope[:, h_p:, :w_p, :, :].reshape(-1, h_p * w_p, heads, head_dim)
+
+            # 【C. RoPE Deception：给 Q_B 穿上 B' 的位置外衣】
+            # 输出的 q_fake_b_prime 是 4D: (batch, h_p*w_p, heads, head_dim)
+            q_fake_b_prime = apply_rotary_emb(q_unrope_b, rope_b_prime, sequence_dim=1)
+
+            # 将伪造的 Query 压平为 3D: (batch*heads, h_p*w_p, head_dim)
+            q_fake_b_prime = q_fake_b_prime.permute(0, 2, 1, 3).reshape(-1, h_p * w_p, head_dim)
+
+            # 【D. 提取正常的 B 区域 Key (K_B) 】
+            # 此时的 key 已经是 3D (batch*heads, seq, dim) 且带有原始的 RoPE_B
+            img_k = key[:, self.text_seq_len:, :].view(-1, H_p, W_p, head_dim)
+            k_b = img_k[:, h_p:, :w_p, :].reshape(-1, h_p * w_p, head_dim)
+
+            # 【E. 计算物理规律正确的完美注意力分数】
+            sim_fake = torch.bmm(q_fake_b_prime, k_b.transpose(-1, -2)) * scale
+            sim_fake = sim_fake.view(-1, h_p, w_p, h_p, w_p)
+
+            sim_fake = sim_fake + self.b_b_copyto_bp_b_tau
+            
+            # 🌟 直接覆盖 B' -> B 的注意力！不需要加 tau 补偿了！
+            img_sim[:, h_p:, w_p:, h_p:, :w_p] = sim_fake
+            
+            # ... 继续执行你的 B'->A' 或者其他的克隆逻辑 ...
 
             # --- 矩阵克隆开始 ---
             # 目标: B' (右下, y:h_p~end, x:w_p~end)
@@ -177,19 +233,6 @@ class SACFluxAttnProcessor:
             # 动作 2: 阻断旧语义源 (防止画出红苹果)
             # 严禁 B' 看 A (左上的原苹果)，逼迫它只能顺着动作1去 A' 吸取橘子特征
             # img_sim[:, h_p:, w_p:, :h_p, :w_p] = -10000.0
-
-            # 动作 3: B'结构需要和B一致
-            # 直接把 B -> B 的分数克隆到 B' -> B 上，确保它们的结构感完全一致！
-            # 但是 RoPE 导致的空间错位让它们的注意力分数大小不在同一水平，必须动态对齐一下才能安全克隆！
-            clone_b_to_b = img_sim[:, h_p:, :w_p, h_p:, :w_p].clone()
-            native_b_prime_to_b = img_sim[:, h_p:, w_p:, h_p:, :w_p].clone()
-            max_native_b_prime_to_b = native_b_prime_to_b.amax(dim=-1, keepdim=True)
-            max_b_to_b = clone_b_to_b.amax(dim=-1, keepdim=True)
-            # 🌟 动态对齐 (Logit Alignment)
-            # 将干净分数的峰值，强行平移到原生噪声分数的峰值水平
-            # tau = 0.0 表示 1:1 绝对公平竞争；tau = 1.0 表示让克隆特征有 e^1 倍的优势
-            aligned_b_to_b = clone_b_to_b - max_b_to_b + max_native_b_prime_to_b + self.b_b_copyto_bp_b_tau
-            img_sim[:, h_p:, w_p:, h_p:, :w_p] = aligned_b_to_b
 
             # ⚠️ 极其关键的修复：什么都不做！
             # 绝对不要动 B' -> B'：让它自己平滑噪声，生成完美的油画笔触！

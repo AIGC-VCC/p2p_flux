@@ -29,38 +29,55 @@ def setup_workdir(task, idx_a, idx_b):
     workdir.mkdir(parents=True, exist_ok=True)
     
     config_path = workdir / "config.json"
-    
+
+    # 🌟 1. 尝试读取已存在的配置
+    existing_config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing_config = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Warning: {config_path} is corrupted, will recreate it.")
+
+    # 获取基础信息
     pair = get_sample_pair(Relation252K_dataset, task, idx_a, idx_b)
-    prompt = generate_2x2_prompt(pair)
     
-    # 1. 先生成图片
-    input_img, mask_img, gt_img = generate_2x2_input_mask_gt(pair, mask_strategy='gray')
-    
-    # 2. 定义绝对或相对路径
-    input_img_path = str(workdir / "input_image.png")
-    mask_img_path = str(workdir / "mask_image.png")
-    gt_img_path = str(workdir / "gt.png")
-    
-    # 3. 存图
-    input_img.save(input_img_path)
-    mask_img.save(mask_img_path)
-    gt_img.save(gt_img_path)
-    
-    # 🌟 4. 将所有路径写入配置
-    config_data = {
+    # 默认路径
+    default_input_path = str(workdir / "input_image.png")
+    default_mask_path = str(workdir / "mask_image.png")
+    default_gt_path = str(workdir / "gt.png")
+
+    # 🌟 2. 构建基础默认配置
+    base_config = {
         "task": task,
         "idx_a": idx_a,
         "idx_b": idx_b,
-        "prompt": prompt,
+        "prompt": pair["samples"][1]['right_image_description'],
         "example_img_path": pair['samples'][0]['img_path'],
         "tobeedit_img_path": pair['samples'][1]['img_path'],
-        "input_img_path": input_img_path, # 新增
-        "mask_img_path": mask_img_path,   # 新增
-        "gt_img_path": gt_img_path        # 新增
+        "input_img_path": default_input_path,
+        "mask_img_path": default_mask_path,
+        "gt_img_path": default_gt_path
     }
-    
+
+    # 🌟 3. 合并配置：用手动修改过的现有配置覆盖默认配置
+    for key, value in existing_config.items():
+        base_config[key] = value
+
+    # 🌟 4. 图片的按需生成（防覆盖）
+    # 如果配置文件里指定的 input_img_path 文件确实存在，说明图片已经准备好了，跳过生成
+    if not (Path(base_config["input_img_path"]).exists() and Path(base_config["mask_img_path"]).exists()):
+        print(f"Generating images for {task} {idx_a}_{idx_b}...")
+        input_img, mask_img, gt_img = generate_2x2_input_mask_gt(pair, mask_strategy='gray')
+        input_img.save(base_config["input_img_path"])
+        mask_img.save(base_config["mask_img_path"])
+        gt_img.save(base_config["gt_img_path"])
+    else:
+        print(f"Input images already exist for {task} {idx_a}_{idx_b}, skipping generation.")
+
+    # 🌟 5. 将最终的完整配置写回
     with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config_data, f, indent=4, ensure_ascii=False)
+        json.dump(base_config, f, indent=4, ensure_ascii=False)
         
     return str(workdir)
 
@@ -83,7 +100,7 @@ def main():
 
     # 3. 定义参数空间并生成任务
     end_inject_list = [-1.0, -0.5, 0, 0.5, 1.0]
-    lambda_shift_list = [-1.0, -0.5, 0, 0.5, 2.0]
+    lambda_shift_list = [-8.0, -5.0, -4.0, -2.0, -1.0]
     tasks = list(itertools.product(end_inject_list, lambda_shift_list))
 
     def run_experiment(task_params):

@@ -232,7 +232,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # 核心变动：接受 workdir 作为入口
     parser.add_argument("--workdir", type=str, required=True, help="Path to the experiment working directory")
-    parser.add_argument("--end_step", type=int, default=5, help="End step for SAC injection")
+    parser.add_argument("--end_step", type=int, default=30, help="End step for SAC injection")
     parser.add_argument("--tau_a", type=float, default=1.6, help="Logit alignment tau for A' attending to A")
     parser.add_argument("--tau_b", type=float, default=1.0, help="Logit alignment tau for B' attending to B")
     parser.add_argument("--gpu0", type=str, default="cuda:0")
