@@ -1,14 +1,10 @@
 import os
+import argparse
 import re
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import collections
 
-# --- 配置部分 ---
-# 指向你要整理的实验结果目录
-RESULT_DIR = Path("output/9-Disney_Style/6_5") 
-# 最终拼接图片的保存路径
-OUTPUT_GRID_PATH = RESULT_DIR / "hyperparam_grid.png"
 
 # 字体配置 (用于绘制坐标轴标签)
 # 尝试加载系统自带的 Arial 字体，如果没有则使用默认字体
@@ -78,6 +74,13 @@ def crop_bottom_right(img_path):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--result_dir", type=str, required=True, help="Path to the directory containing output images")
+    args = parser.parse_args()
+
+    RESULT_DIR = Path(args.result_dir)
+    OUTPUT_GRID_PATH = RESULT_DIR / "hyperparam_grid.png"
+
     if not RESULT_DIR.exists():
         print(f"Error: Directory not found at {RESULT_DIR}")
         return

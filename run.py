@@ -14,11 +14,6 @@ from transformers import CLIPTextModel, T5EncoderModel
 
 from attn_proc.sac import SACFluxAttnProcessor
 
-task_list = [
-    "9-Disney_Style",
-    "6-Animal_Airforce",
-]
-
 Relation252K_dataset = "~/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631"
 
 def get_sample(dataset_dir, task, idx):
@@ -233,27 +228,30 @@ def save_attention_map(tokenizer_2, prompt, max_sequence_length, image, attn_pro
     }
     torch.save(save_dict, attention_store_path)
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # 核心变动：接受 workdir 作为入口
+    parser.add_argument("--workdir", type=str, required=True, help="Path to the experiment working directory")
     parser.add_argument("--end_step", type=int, default=5, help="End step for SAC injection")
     parser.add_argument("--tau_a", type=float, default=1.6, help="Logit alignment tau for A' attending to A")
     parser.add_argument("--tau_b", type=float, default=1.0, help="Logit alignment tau for B' attending to B")
     parser.add_argument("--gpu0", type=str, default="cuda:0")
     parser.add_argument("--gpu1", type=str, default="cuda:1")
-    parser.add_argument("--task", type=str, default="9-Disney_Style")
     args = parser.parse_args()
 
-    idx_a, idx_b = 6, 5
-    pair = get_sample_pair(Relation252K_dataset, args.task, idx_a, idx_b)
-    output_dir = get_output_dir("output", args.task, idx_a, idx_b)
-
-    input_image, mask_image, gt_image = generate_2x2_input_mask_gt(pair, mask_strategy='gray')
-    prompt = generate_2x2_prompt(pair)
-
-    model_path = "/home/frain/Documents/FLUX.1-Fill"
+    workdir = Path(args.workdir)
+    config_path = workdir / "config.json"
     
-    # 使用传入的 GPU 参数
+    # 1. 加载配置和静态图片
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+        
+    prompt = config["prompt"]
+    input_image = Image.open(config["input_img_path"]).convert("RGB")
+    mask_image = Image.open(config["mask_img_path"]).convert("L")
+    
+    # 2. 初始化模型
+    model_path = "/home/frain/Documents/FLUX.1-Fill"
     pipe = load_flux_to_2_gpu(model_path, gpu0=args.gpu0, gpu1=args.gpu1, dtype=torch.bfloat16)
 
     out_width, out_height = input_image.width, input_image.height
@@ -270,6 +268,7 @@ if __name__ == "__main__":
         b_b_copyto_bp_b_tau=args.tau_b
     )
 
+    # 3. 推理
     images = pipe(
         prompt=prompt,
         image=input_image,
@@ -282,34 +281,27 @@ if __name__ == "__main__":
         generator=torch.Generator("cpu").manual_seed(22)
     ).images
 
-    # 4. 注入 PNG Metadata
+    # 4. 注入 Metadata 并保存
     metadata = PngInfo()
     metadata.add_text("end_step", str(args.end_step))
     metadata.add_text("tau_a", str(args.tau_a))
     metadata.add_text("tau_b", str(args.tau_b))
     metadata.add_text("prompt", prompt)
     
-    # 2. 生成带有参数的文件名
     file_name = f"output_ei{args.tau_a}_ls{args.tau_b}.png"
-    out_path = output_dir / file_name
-    
-    # 保存图片时传入 metadata
+    out_path = workdir / file_name
     images[0].save(out_path, pnginfo=metadata)
-    
-    # 顺手把 GT 存下来（如果不存在的话）
-    gt_path = output_dir / "gt.png"
-    if not gt_path.exists():
-        gt_image.save(gt_path)
 
-    # 记录到全局 JSONL 文件中
+    # 5. 记录到全局日志中
     log_file = Path("output") / "experiments.jsonl"
     log_data = {
-        "task": args.task,
-        "idx_a": idx_a,
-        "idx_b": idx_b,
+        "task": config["task"],
+        "idx_a": config["idx_a"],
+        "idx_b": config["idx_b"],
         "end_step": args.end_step,
         "tau_a": args.tau_a,
         "tau_b": args.tau_b,
+        "workdir": str(workdir),
         "output_path": str(out_path)
     }
     with open(log_file, "a", encoding="utf-8") as f:
