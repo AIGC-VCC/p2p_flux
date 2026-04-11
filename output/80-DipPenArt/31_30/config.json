@@ -1,0 +1,11 @@
+{
+    "task": "80-DipPenArt",
+    "idx_a": 31,
+    "idx_b": 30,
+    "prompt": "A black and white hand-drawn illustration of a morel mushroom with similar features to the photograph.",
+    "example_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/80-DipPenArt/LineArtIllustration-realistic-plant/31.png",
+    "tobeedit_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/80-DipPenArt/LineArtIllustration-realistic-plant/30.png",
+    "input_img_path": "output/80-DipPenArt/31_30/input_image.png",
+    "mask_img_path": "output/80-DipPenArt/31_30/mask_image.png",
+    "gt_img_path": "output/80-DipPenArt/31_30/gt.png"
+}

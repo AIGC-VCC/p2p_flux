@@ -99,15 +99,15 @@ def main():
         gpu_queue.put(pair)
 
     # 3. 定义参数空间并生成任务
-    end_inject_list = [-1.0, -0.5, 0, 0.5, 1.0]
-    lambda_shift_list = [-8.0, -5.0, -4.0, -2.0, -1.0]
+    end_inject_list = [-2.0, -1, 0, 1,]
+    lambda_shift_list = [-2.0, -1, 0, 1,]
     tasks = list(itertools.product(end_inject_list, lambda_shift_list))
 
     def run_experiment(task_params):
         ei, ls = task_params
         gpu0, gpu1 = gpu_queue.get()
         
-        print(f"Starting tau_a={ei}, tau_b={ls} on GPUs {gpu0},{gpu1}")
+        print(f"Starting end_step={ei}, tau_b={ls} on GPUs {gpu0},{gpu1}")
         
         # 传递 workdir 而非单独的 task/idx
         cmd = [
