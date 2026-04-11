@@ -237,6 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--tau_b", type=float, default=1.0, help="Logit alignment tau for B' attending to B")
     parser.add_argument("--gpu0", type=str, default="cuda:0")
     parser.add_argument("--gpu1", type=str, default="cuda:1")
+    parser.add_argument("--savemap", action="store_true", help="Save attention map after inference")
     args = parser.parse_args()
 
     workdir = Path(args.workdir)
@@ -292,7 +293,21 @@ if __name__ == "__main__":
     out_path = workdir / file_name
     images[0].save(out_path, pnginfo=metadata)
 
-    # 5. 记录到全局日志中
+    # 5. 保存注意力图（如果指定）
+    if args.savemap:
+        attention_store_path = workdir / f"attention_map_ei{args.tau_a}_ls{args.tau_b}.pt"
+        save_attention_map(
+            pipe.tokenizer_2,
+            prompt,
+            max_sequence_length,
+            images,
+            attn_processor,
+            out_width,
+            out_height,
+            # str(attention_store_path)
+        )
+
+    # 6. 记录到全局日志中
     log_file = Path("output") / "experiments.jsonl"
     log_data = {
         "task": config["task"],
