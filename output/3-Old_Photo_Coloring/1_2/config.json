@@ -2,7 +2,7 @@
     "task": "3-Old_Photo_Coloring",
     "idx_a": 1,
     "idx_b": 2,
-    "prompt": "A colorized version of the photograph showing a person standing in front of windmills with a grassy landscape and a blue sky.",
+    "prompt": "A colorized version of the photograph showing a woman wearing a light-colored, slightly faded corduroy or canvas jacket over a light t-shirt and dark wash denim jeans. A fabric tote bag strap is over her left shoulder. She is standing on a dirt path with grassy areas. In the background are several large, traditional Dutch windmills by a body of water under a clear, daytime sky. The lighting is bright natural sunlight, creating a high-key look. The overall style is that of a modern colored photograph.",
     "example_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/3-Old_Photo_Coloring/Group1/1.png",
     "tobeedit_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/3-Old_Photo_Coloring/Group1/2.png",
     "input_img_path": "output/3-Old_Photo_Coloring/1_2/input_image.png",

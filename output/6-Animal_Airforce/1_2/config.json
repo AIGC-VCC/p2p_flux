@@ -1,0 +1,11 @@
+{
+    "task": "6-Animal_Airforce",
+    "idx_a": 1,
+    "idx_b": 2,
+    "prompt": "A kangaroo sitting in the cockpit of a fighter jet wearing a pilot's suit.",
+    "example_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/6-Animal_Airforce/Group1/1.png",
+    "tobeedit_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/6-Animal_Airforce/Group1/2.png",
+    "input_img_path": "output/6-Animal_Airforce/1_2/input_image.png",
+    "mask_img_path": "output/6-Animal_Airforce/1_2/mask_image.png",
+    "gt_img_path": "output/6-Animal_Airforce/1_2/gt.png"
+}

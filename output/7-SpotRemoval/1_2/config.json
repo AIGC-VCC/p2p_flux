@@ -1,0 +1,11 @@
+{
+    "task": "7-SpotRemoval",
+    "idx_a": 1,
+    "idx_b": 2,
+    "prompt": "A person with no spots on her face and have curly hair styled in two buns wearing a red ribbed top and a star necklace.",
+    "example_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/7-SpotRemoval/Group1/1.png",
+    "tobeedit_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/7-SpotRemoval/Group1/2.png",
+    "input_img_path": "output/7-SpotRemoval/1_2/input_image.png",
+    "mask_img_path": "output/7-SpotRemoval/1_2/mask_image.png",
+    "gt_img_path": "output/7-SpotRemoval/1_2/gt.png"
+}

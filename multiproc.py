@@ -8,11 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 task_list = [
-    "3-Old_Photo_Coloring",
-    "6-Animal_Airforce",
     "7-SpotRemoval",
     "8-Character_Thinner",
-    "9-Disney_Style",
     "WatercolorHandpainted-Animal1"
 
     "107-Strokes-LOGO",
@@ -99,8 +96,8 @@ def main():
         gpu_queue.put(pair)
 
     # 3. 定义参数空间并生成任务
-    end_inject_list = [-2.0, -1, 0, 1,]
-    lambda_shift_list = [-2.0, -1, 0, 1,]
+    end_inject_list = [-1, 0, 3, 5]
+    lambda_shift_list = [-5, -2.0, 0]
     tasks = list(itertools.product(end_inject_list, lambda_shift_list))
 
     def run_experiment(task_params):
