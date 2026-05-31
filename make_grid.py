@@ -129,13 +129,13 @@ def main():
 
     # 5. 绘制坐标轴标题
     # X轴标题 (Lambda Shift)
-    x_title = "Lambda Shift"
+    x_title = "tau_b"
     tw, th = draw.textbbox((0, 0), x_title, font=title_font)[2:]
     draw.text((Y_AXIS_SPACE + (total_w - Y_AXIS_SPACE - tw) // 2, 20), x_title, fill=TEXT_COLOR, font=title_font)
 
     # Y轴标题 (End Inject Step)
     # PIL 绘制旋转文字比较麻烦，这里简单处理，分行显示
-    y_title_base = "End\nInject\nStep"
+    y_title_base = "tau_a"
     draw.multiline_text((20, X_AXIS_SPACE + 20), y_title_base, fill=TEXT_COLOR, font=title_font, align="center")
 
 

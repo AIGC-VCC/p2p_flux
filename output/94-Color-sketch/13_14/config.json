@@ -1,0 +1,11 @@
+{
+    "task": "94-Color-sketch",
+    "idx_a": 13,
+    "idx_b": 14,
+    "prompt": "A stylized illustration of a person with short, curly blonde hair and a blue shirt.",
+    "example_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/94-Color-sketch/QuickSketch-Colar/13.png",
+    "tobeedit_img_path": "/home/frain/.cache/huggingface/hub/datasets--handsomeWilliam--Relation252K/snapshots/77d3267468d11b7625671f123f57d09424a58631/94-Color-sketch/QuickSketch-Colar/14.png",
+    "input_img_path": "output/94-Color-sketch/13_14/input_image.png",
+    "mask_img_path": "output/94-Color-sketch/13_14/mask_image.png",
+    "gt_img_path": "output/94-Color-sketch/13_14/gt.png"
+}

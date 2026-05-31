@@ -96,8 +96,8 @@ def main():
         gpu_queue.put(pair)
 
     # 3. 定义参数空间并生成任务
-    end_inject_list = [-1, 0, 3, 5]
-    lambda_shift_list = [-5, -2.0, 0]
+    end_inject_list = [-2,-1, 0, 1]
+    lambda_shift_list = [-2,-1,0,1]
     tasks = list(itertools.product(end_inject_list, lambda_shift_list))
 
     def run_experiment(task_params):

@@ -1,0 +1,8 @@
+{
+    "task": "7-SpotRemoval",
+    "idx_a": 1,
+    "idx_b": 2,
+    "prompt": "edit the image according to the example on top",
+    "input_img_path": "output/0-tmp/1_2/grid_image.png",
+    "mask_img_path": "output/0-tmp/1_2/grid_mask.png"
+}
