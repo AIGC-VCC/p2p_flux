@@ -238,6 +238,8 @@ if __name__ == "__main__":
     parser.add_argument("--gpu0", type=str, default="cuda:0")
     parser.add_argument("--gpu1", type=str, default="cuda:1")
     parser.add_argument("--savemap", action="store_true", help="Save attention map after inference")
+    parser.add_argument("--output_name", type=str, default=None, help="Optional output filename, e.g. output_no_sac.png")
+    parser.add_argument("--disable_sac", action="store_true", help="Run the original pipeline without SAC attention modification")
     args = parser.parse_args()
 
     workdir = Path(args.workdir)
@@ -259,15 +261,17 @@ if __name__ == "__main__":
     num_inference_steps = 50
     max_sequence_length = 256
     
-    attn_processor = SACFluxAttnProcessor(
-        pipe=pipe, 
-        prompt=prompt, 
-        out_width=out_width, 
-        out_height=out_height, 
-        end_step=args.end_step,
-        b_a_copyto_bp_ap_tau=args.tau_a,
-        b_b_copyto_bp_b_tau=args.tau_b
-    )
+    attn_processor = None
+    if not args.disable_sac:
+        attn_processor = SACFluxAttnProcessor(
+            pipe=pipe, 
+            prompt=prompt, 
+            out_width=out_width, 
+            out_height=out_height, 
+            end_step=args.end_step,
+            b_a_copyto_bp_ap_tau=args.tau_a,
+            b_b_copyto_bp_b_tau=args.tau_b
+        )
 
     # 3. 推理
     images = pipe(
@@ -287,14 +291,19 @@ if __name__ == "__main__":
     metadata.add_text("end_step", str(args.end_step))
     metadata.add_text("tau_a", str(args.tau_a))
     metadata.add_text("tau_b", str(args.tau_b))
+    metadata.add_text("disable_sac", str(args.disable_sac))
     metadata.add_text("prompt", prompt)
     
-    file_name = f"output_ei{args.tau_a}_ls{args.tau_b}.png"
+    file_name = args.output_name or f"output_ei{args.tau_a}_ls{args.tau_b}.png"
+    if Path(file_name).name != file_name:
+        raise ValueError("--output_name must be a filename, not a path")
+    if not file_name.lower().endswith(".png"):
+        file_name += ".png"
     out_path = workdir / file_name
     images[0].save(out_path, pnginfo=metadata)
 
     # 5. 保存注意力图（如果指定）
-    if args.savemap:
+    if args.savemap and attn_processor is not None:
         attention_store_path = workdir / f"attention_map_ei{args.tau_a}_ls{args.tau_b}.pt"
         save_attention_map(
             pipe.tokenizer_2,
@@ -316,6 +325,7 @@ if __name__ == "__main__":
         "end_step": args.end_step,
         "tau_a": args.tau_a,
         "tau_b": args.tau_b,
+        "disable_sac": args.disable_sac,
         "workdir": str(workdir),
         "output_path": str(out_path)
     }

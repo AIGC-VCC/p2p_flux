@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import sys
 import itertools
 import argparse
 from pathlib import Path
@@ -104,11 +105,11 @@ def main():
         ei, ls = task_params
         gpu0, gpu1 = gpu_queue.get()
         
-        print(f"Starting end_step={ei}, tau_b={ls} on GPUs {gpu0},{gpu1}")
+        print(f"Starting tau_a={ei}, tau_b={ls} on GPUs {gpu0},{gpu1}")
         
         # 传递 workdir 而非单独的 task/idx
         cmd = [
-            "python", "run.py",
+            sys.executable, "run.py",
             "--workdir", workdir,
             "--tau_a", str(ei),
             "--tau_b", str(ls),
@@ -131,9 +132,30 @@ def main():
     with ThreadPoolExecutor(max_workers=4) as executor:
         executor.map(run_experiment, tasks)
 
-    # 5. 生成汇总网格图
-    print(f"All runs finished. Generating grid for {workdir}...")
-    subprocess.run(["python", "make_grid.py", "--result_dir", workdir], check=True)
+    print("Running no-SAC baseline with end_step=0...")
+    gpu0, gpu1 = gpu_queue.get()
+    try:
+        cmd = [
+            sys.executable, "run.py",
+            "--workdir", workdir,
+            "--disable_sac",
+            "--end_step", "0",
+            "--tau_a", "0",
+            "--tau_b", "0",
+            "--gpu0", "cuda:0",
+            "--gpu1", "cuda:1",
+            "--output_name", "output_no_sac.png",
+        ]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = f"{gpu0},{gpu1}"
+        subprocess.run(cmd, env=env, check=True)
+    finally:
+        gpu_queue.put((gpu0, gpu1))
+
+    # 5. 生成汇总网格图和指标表
+    print(f"All runs finished. Generating grid and metrics for {workdir}...")
+    subprocess.run([sys.executable, "make_grid.py", "--result_dir", workdir], check=True)
+    subprocess.run([sys.executable, "evaluate_metrics.py", "--result_dir", workdir], check=True)
 
 if __name__ == "__main__":
     main()
